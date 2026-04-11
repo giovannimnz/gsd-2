@@ -797,3 +797,4 @@ Use expensive models where quality matters (planning, complex execution) and che
 **`npm install -g gsd-pi && gsd`**
 
 </div>
+teste

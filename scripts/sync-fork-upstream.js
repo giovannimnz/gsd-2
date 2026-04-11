@@ -10,12 +10,12 @@ const DEFAULTS = {
   baseMode: 'rebase', // rebase | merge
   customMode: 'rebase', // rebase | merge
   autoMergeCustomIntoBase: false,
-  commitBeforeSync: false,
+  commitAfterSync: true,
   commitMessage: undefined,
-  pushMain: false,
-  pushCustom: false,
-  build: false,
-  autoPushAfterBuild: false,
+  pushMain: true,
+  pushCustom: true,
+  build: true,
+  autoPushAfterBuild: true,
   allowDirty: false,
   dryRun: false,
   restoreBranch: true,
@@ -37,13 +37,16 @@ function printHelp() {
       '  --base-mode <mode>       Sync mode for base branch: rebase|merge (default: rebase).',
       '  --custom-mode <mode>     Sync mode for custom branch: rebase|merge (default: rebase).',
       '  --auto-merge             Merge custom branch back into base branch if sync succeeds.',
-      '  --commit                 Commit all pending changes before syncing.',
-      '  --commit-message <msg>   Commit message for --commit (auto-generated if omitted).',
+      '  --no-commit              Disable automatic commit after sync (enabled by default).',
+      '  --commit-message <msg>   Custom commit message for auto-commit.',
       '  --push-main              Push synced base branch to origin.',
       '  --push-custom            Push synced custom branch to origin.',
-      '  --push                   Shortcut for --push-main --push-custom.',
-      '  --build                  Run npm run build after sync.',
-      '  --auto-push              Auto-push after successful build (requires --build).',
+      '  --push                   Push both base and custom branches.',
+      '  --no-push                Disable all push operations.',
+      '  --build                  Run npm run build after sync (enabled by default).',
+      '  --no-build               Disable automatic build after sync.',
+      '  --auto-push              Enable auto-push after successful build (enabled by default).',
+      '  --no-auto-push           Disable auto-push after build.',
       '  --allow-dirty            Allow running with uncommitted changes.',
       '  --dry-run                Print commands without executing them.',
       '  --no-restore-branch      Leave HEAD on the last branch touched.',
@@ -53,8 +56,8 @@ function printHelp() {
       '  node scripts/sync-fork-upstream.js --custom-branch custom/meu-trabalho --push --build',
       '  node scripts/sync-fork-upstream.js --custom-branch custom/meu-trabalho --auto-merge --push-main',
       '  node scripts/sync-fork-upstream.js --custom-branch custom/meu-trabalho --base-mode merge',
-      '  node scripts/sync-fork-upstream.js --commit --auto-merge --build --auto-push',
-      '  node scripts/sync-fork-upstream.js --commit --build',
+      '  node scripts/sync-fork-upstream.js --auto-merge --build',
+      '  node scripts/sync-fork-upstream.js --no-commit --no-auto-push',
       '',
     ].join('\n'),
   )
@@ -108,12 +111,18 @@ function parseArgs(argv) {
       options.autoMergeCustomIntoBase = true
       continue
     }
-    if (arg === '--commit') {
-      options.commitBeforeSync = true
+    if (arg === '--no-commit') {
+      options.commitAfterSync = false
       continue
     }
     if (arg === '--commit-message') {
       options.commitMessage = argv[++i]
+      continue
+    }
+    if (arg === '--no-push') {
+      options.pushMain = false
+      options.pushCustom = false
+      options.autoPushAfterBuild = false
       continue
     }
     if (arg === '--push-main') {
@@ -129,8 +138,16 @@ function parseArgs(argv) {
       options.pushCustom = true
       continue
     }
+    if (arg === '--no-build') {
+      options.build = false
+      continue
+    }
     if (arg === '--build') {
       options.build = true
+      continue
+    }
+    if (arg === '--no-auto-push') {
+      options.autoPushAfterBuild = false
       continue
     }
     if (arg === '--auto-push') {
@@ -197,6 +214,60 @@ function git(args, options = {}) {
 
 function gitOutput(args, options = {}) {
   return git(args, { ...options, dryRun: false, capture: true }).stdout.trim()
+}
+
+function generateCommitMessage(options) {
+  // Get status to categor changes
+  const statusOutput = gitOutput(['status', '--porcelain'], options)
+  if (!statusOutput) {
+    return null
+  }
+
+  const added = []
+  const modified = []
+  const deleted = []
+  const renamed = []
+
+  for (const line of statusOutput.split('\n').filter(Boolean)) {
+    const status = line.substring(0, 2)
+    const file = line.substring(3).trim()
+
+    if (status[0] === 'A' && status[1] === ' ') {
+      added.push(file)
+    } else if (status[0] === 'M' || status[1] === 'M') {
+      modified.push(file)
+    } else if (status[0] === 'D' || status[1] === 'D') {
+      deleted.push(file)
+    } else if (status[0] === 'R' || status[1] === 'R') {
+      renamed.push(file)
+    }
+  }
+
+  const parts = ['chore: auto-commit changes before fork sync']
+
+  const sections = []
+
+  if (added.length > 0) {
+    sections.push(`\nAdicionados (${added.length}):\n${added.map(f => `- ${f}`).join('\n')}`)
+  }
+
+  if (modified.length > 0) {
+    sections.push(`\nAlterados (${modified.length}):\n${modified.map(f => `- ${f}`).join('\n')}`)
+  }
+
+  if (deleted.length > 0) {
+    sections.push(`\nRemovidos (${deleted.length}):\n${deleted.map(f => `- ${f}`).join('\n')}`)
+  }
+
+  if (renamed.length > 0) {
+    sections.push(`\nRenomeados (${renamed.length}):\n${renamed.map(f => `- ${f}`).join('\n')}`)
+  }
+
+  if (sections.length > 0) {
+    parts.push(sections.join('\n'))
+  }
+
+  return parts.join('\n')
 }
 
 function hasRemote(name, options) {
@@ -299,18 +370,21 @@ async function main() {
     fail(`Custom branch cannot be the same as base branch ('${options.baseBranch}').`)
   }
 
-  // Commit pending changes before sync if requested
-  if (options.commitBeforeSync) {
+  // Auto-commit pending changes BEFORE sync to allow clean rebase
+  if (options.commitAfterSync) {
     const dirtyOutput = gitOutput(['status', '--porcelain'], options)
     if (dirtyOutput) {
-      log('Committing pending changes before sync...')
+      log('Auto-committing pending changes before sync...')
       git(['add', '-A'], options)
-      const commitMsg = options.commitMessage || `chore: auto-commit pending changes before fork sync (${new Date().toISOString()})`
-      try {
-        git(['commit', '-m', commitMsg], options)
-        log(`Committed with message: ${commitMsg}`)
-      } catch (err) {
-        fail(`Failed to commit changes: ${err.message}`)
+      
+      const commitMsg = options.commitMessage || generateCommitMessage(options)
+      if (commitMsg) {
+        try {
+          git(['commit', '-m', commitMsg], options)
+          log('Auto-commit completed successfully.')
+        } catch (err) {
+          fail(`Failed to commit changes: ${err.message}`)
+        }
       }
     } else {
       log('No pending changes to commit.')

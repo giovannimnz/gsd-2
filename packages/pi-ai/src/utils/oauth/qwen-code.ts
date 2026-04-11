@@ -70,10 +70,7 @@ function getQwenApiKey(): string {
 export const qwenCodeOAuthProvider: OAuthProviderInterface = {
 	id: "qwen-code",
 	name: "Qwen Code",
-
-	isConfigured() {
-		return isQwenAuthenticated();
-	},
+	usesCallbackServer: false,
 
 	getApiKey(credentials: OAuthCredentials): string {
 		return credentials.access || getQwenApiKey();

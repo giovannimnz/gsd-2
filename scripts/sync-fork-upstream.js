@@ -429,8 +429,11 @@ async function main() {
       }
     }
 
+    // Push main if enabled
     if (options.pushMain) {
-      pushBranch(options.baseBranch, options.originRemote, false, options)
+      // Use force-with-lease when rebasing to handle rewritten history
+      const forceWithLease = options.baseMode === 'rebase'
+      pushBranch(options.baseBranch, options.originRemote, forceWithLease, options)
     }
 
     if (options.build) {
@@ -438,12 +441,14 @@ async function main() {
       run('npm', ['run', 'build'], { dryRun: options.dryRun, capture: false })
       log('Build completed successfully.')
 
-      // Auto-push after successful build if requested
+      // Auto-push after successful build if requested (for any remaining changes)
       if (options.autoPushAfterBuild && hasRemote(options.originRemote, options)) {
-        log('Auto-pushing changes to origin...')
-        git(['push', options.originRemote, options.baseBranch], options)
+        log('Auto-pushing remaining changes to origin...')
+        const forceWithLease = options.baseMode === 'rebase'
+        pushBranch(options.baseBranch, options.originRemote, forceWithLease, options)
         if (customBranch && options.pushCustom) {
-          git(['push', options.originRemote, customBranch], options)
+          const forceCustom = options.customMode === 'rebase'
+          pushBranch(customBranch, options.originRemote, forceCustom, options)
         }
         log('Auto-push completed successfully.')
       }

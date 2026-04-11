@@ -172,6 +172,14 @@ This pushes the milestone branch and creates a PR targeting `develop` (or whiche
 
 When set to `false`, GSD adds `.gsd/` to `.gitignore` and keeps all planning artifacts local-only. Useful for teams where only some members use GSD, or when company policy requires a clean repository.
 
+## Maintaining a Personal Fork
+
+If you run GSD from your own fork and regularly pull from `upstream`, use the automated fork sync workflow:
+
+- [Fork Sync Workflow](./fork-sync.md)
+
+It handles upstream fetch, base-branch sync, custom-branch rebase/merge, optional push, and optional rebuild.
+
 ## Self-Healing
 
 GSD includes automatic recovery for common git issues:

@@ -1,5 +1,16 @@
 import { NextResponse, type NextRequest } from "next/server"
 
+const WEB_LOGIN_SESSION_COOKIE = "gsd_web_session"
+
+function isLoginRequired(): boolean {
+  const password = process.env.GSD_WEB_LOGIN_PASSWORD
+  return Boolean(password && password.trim().length > 0)
+}
+
+function isLoginBypassPath(pathname: string): boolean {
+  return pathname === "/api/auth/login" || pathname === "/api/auth/logout" || pathname === "/api/auth/me"
+}
+
 /**
  * Next.js middleware — validates bearer token and origin on all API routes.
  *
@@ -10,6 +21,9 @@ import { NextResponse, type NextRequest } from "next/server"
  *
  * Additionally, if an `Origin` header is present, it must match the expected
  * localhost origin to prevent cross-site request forgery.
+ *
+ * Optional hardening: when GSD_WEB_LOGIN_PASSWORD is configured, API access
+ * also requires a valid httpOnly session cookie set by /api/auth/login.
  */
 export function middleware(request: NextRequest): NextResponse | undefined {
   const { pathname } = request.nextUrl
@@ -18,11 +32,6 @@ export function middleware(request: NextRequest): NextResponse | undefined {
   if (!pathname.startsWith("/api/")) return NextResponse.next()
 
   const expectedToken = process.env.GSD_WEB_AUTH_TOKEN
-  if (!expectedToken) {
-    // If no token was configured (e.g. dev mode without launch harness),
-    // allow everything — the server didn't opt into auth.
-    return NextResponse.next()
-  }
 
   // ── Origin / CORS check ────────────────────────────────────────────
   const origin = request.headers.get("origin")
@@ -65,11 +74,32 @@ export function middleware(request: NextRequest): NextResponse | undefined {
     token = request.nextUrl.searchParams.get("_token")
   }
 
-  if (!token || token !== expectedToken) {
+  if (expectedToken && (!token || token !== expectedToken)) {
     return NextResponse.json(
       { error: "Unauthorized" },
       { status: 401 },
     )
+  }
+
+  // ── Optional username/password session gate ────────────────────────
+  if (isLoginRequired() && !isLoginBypassPath(pathname)) {
+    const expectedSessionToken =
+      process.env.GSD_WEB_LOGIN_SESSION_TOKEN || process.env.GSD_WEB_AUTH_TOKEN
+
+    if (!expectedSessionToken) {
+      return NextResponse.json(
+        { error: "Server login misconfigured" },
+        { status: 500 },
+      )
+    }
+
+    const sessionCookie = request.cookies.get(WEB_LOGIN_SESSION_COOKIE)?.value
+    if (!sessionCookie || sessionCookie !== expectedSessionToken) {
+      return NextResponse.json(
+        { error: "Login required" },
+        { status: 401 },
+      )
+    }
   }
 
   return NextResponse.next()

@@ -12,6 +12,7 @@ import { streamMistral, streamSimpleMistral } from "./mistral.js";
 import { streamOpenAICodexResponses, streamSimpleOpenAICodexResponses } from "./openai-codex-responses.js";
 import { streamOpenAICompletions, streamSimpleOpenAICompletions } from "./openai-completions.js";
 import { streamOpenAIResponses, streamSimpleOpenAIResponses } from "./openai-responses.js";
+import { streamQwenCode, streamSimpleQwenCode } from "./qwen-code.js";
 
 interface BedrockProviderModule {
 	streamBedrock: (
@@ -182,6 +183,12 @@ function registerBuiltInApiProviders(): void {
 		api: "bedrock-converse-stream",
 		stream: streamBedrockLazy,
 		streamSimple: streamSimpleBedrockLazy,
+	});
+
+	registerApiProvider({
+		api: "qwen-code",
+		stream: streamQwenCode,
+		streamSimple: streamSimpleQwenCode,
 	});
 }
 

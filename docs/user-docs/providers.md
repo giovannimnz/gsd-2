@@ -9,6 +9,7 @@ Step-by-step setup instructions for every LLM provider GSD supports. If you ran 
   - [Anthropic (Claude)](#anthropic-claude)
   - [OpenAI](#openai)
   - [Google Gemini](#google-gemini)
+  - [Qwen Code](#qwen-code)
   - [OpenRouter](#openrouter)
   - [Groq](#groq)
   - [xAI (Grok)](#xai-grok)
@@ -33,6 +34,7 @@ Step-by-step setup instructions for every LLM provider GSD supports. If you ran 
 | Anthropic | API key | `ANTHROPIC_API_KEY` | — |
 | OpenAI | API key | `OPENAI_API_KEY` | — |
 | Google Gemini | API key | `GEMINI_API_KEY` | — |
+| Qwen Code | OAuth or API key | `DASHSCOPE_API_KEY` | — |
 | OpenRouter | API key | `OPENROUTER_API_KEY` | Optional `models.json` |
 | Groq | API key | `GROQ_API_KEY` | — |
 | xAI | API key | `XAI_API_KEY` | — |
@@ -157,6 +159,62 @@ export GEMINI_API_KEY="..."
 ```
 
 **Get a key:** [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
+
+### Qwen Code
+
+[Qwen Code](https://github.com/QwenLM/qwen-code) is an open-source AI agent for the terminal, optimized for Qwen series models (Qwen3-Coder).
+
+**Features:**
+- 1,000 free requests/day via Qwen OAuth
+- Optimized for code understanding and generation
+- YOLO mode for automatic execution
+- Support for Qwen3.6-Plus and Qwen3.5-Plus models
+
+**Authentication:**
+
+```bash
+# Inside GSD, run:
+/login
+
+# Select "Qwen Code" from the provider list
+# Complete the OAuth flow in your browser
+```
+
+Or authenticate manually:
+
+```bash
+# Install Qwen Code CLI if not already installed
+npm install -g @qwen-code/qwen-code
+
+# Authenticate via browser
+qwen
+# Inside qwen CLI, run: /auth
+# Select "Qwen OAuth" and complete the browser flow
+```
+
+**API Key Option (Alibaba Cloud ModelStudio):**
+
+```bash
+export DASHSCOPE_API_KEY="sk-..."
+```
+
+**Get a key:** [dashscope.aliyun.com](https://dashscope.aliyun.com)
+
+**Usage:**
+
+After authentication, Qwen Code models will appear in `/model`:
+
+```bash
+gsd
+/model qwen3.6-plus
+```
+
+Default mode is YOLO (automatic execution without prompts). To disable:
+
+```bash
+# Set yoloMode to false in config
+configureQwenCode({ yoloMode: false })
+```
 
 ### OpenRouter
 

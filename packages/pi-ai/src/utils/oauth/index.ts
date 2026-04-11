@@ -25,6 +25,8 @@ export { antigravityOAuthProvider, loginAntigravity, refreshAntigravityToken } f
 export { geminiCliOAuthProvider, loginGeminiCli, refreshGoogleCloudToken } from "./google-gemini-cli.js";
 // OpenAI Codex (ChatGPT OAuth)
 export { loginOpenAICodex, openaiCodexOAuthProvider, refreshOpenAICodexToken } from "./openai-codex.js";
+// Qwen Code
+export { qwenCodeOAuthProvider, loginQwenCode, refreshQwenCodeToken } from "./qwen-code.js";
 
 export * from "./types.js";
 
@@ -36,6 +38,7 @@ import { githubCopilotOAuthProvider } from "./github-copilot.js";
 import { antigravityOAuthProvider } from "./google-antigravity.js";
 import { geminiCliOAuthProvider } from "./google-gemini-cli.js";
 import { openaiCodexOAuthProvider } from "./openai-codex.js";
+import { qwenCodeOAuthProvider } from "./qwen-code.js";
 import type { OAuthCredentials, OAuthProviderId, OAuthProviderInterface } from "./types.js";
 
 const BUILT_IN_OAUTH_PROVIDERS: OAuthProviderInterface[] = [
@@ -43,6 +46,7 @@ const BUILT_IN_OAUTH_PROVIDERS: OAuthProviderInterface[] = [
 	geminiCliOAuthProvider,
 	antigravityOAuthProvider,
 	openaiCodexOAuthProvider,
+	qwenCodeOAuthProvider,
 ];
 
 const oauthProviderRegistry = new Map<string, OAuthProviderInterface>(

@@ -24,6 +24,12 @@ gsd --web --host 0.0.0.0 --port 8080 --allowed-origins "https://example.com"
 | `--port` | `3000` | Port for the web server |
 | `--allowed-origins` | (none) | Comma-separated list of allowed CORS origins |
 
+### Start with login enabled
+
+```bash
+GSD_WEB_LOGIN_PASSWORD='change-me-now' gsd --web
+```
+
 ## Features
 
 - **Project management** — view milestones, slices, and tasks in a visual dashboard
@@ -51,14 +57,41 @@ The web server binds to `localhost:3000` by default. Use `--host`, `--port`, and
 | Variable | Description |
 |----------|-------------|
 | `GSD_WEB_PROJECT_CWD` | Default project path when `?project=` is not specified |
+| `GSD_WEB_LOGIN_PASSWORD` | Enables username/password login gate (required for login mode) |
+| `GSD_WEB_LOGIN_USERNAME` | Login username (default: current OS user, fallback `owner`) |
+| `GSD_WEB_LOGIN_SESSION_TTL_SECONDS` | Session cookie max age in seconds (default: `43200`, 12h) |
+| `GSD_WEB_SECURE_COOKIES` | Force `Secure` session cookies (`1/true`), recommended behind HTTPS tunnels |
 
 ## Node v24 Compatibility
 
 Node v24 introduced breaking changes to type stripping that caused `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING` on web boot. This is fixed in v2.42.0+ (#1864). If you encounter this error, upgrade GSD.
 
-## Auth Token Persistence
+## Authentication Layers
 
-As of v2.42.0, the web UI persists the auth token in `sessionStorage` so it survives page refreshes (#1877). Previously, refreshing the page required re-authentication.
+`gsd --web` always uses a per-instance bearer token (`#token=...`) for API access.
+
+- Token is extracted from URL fragment on first load.
+- Token is persisted in **localStorage** (same-origin scoped by random port).
+- API requests send `Authorization: Bearer <token>`.
+- SSE/sendBeacon use `?_token=` fallback where headers are unavailable.
+
+### Optional Login Screen (username/password)
+
+For tighter local/remote access control, enable the login screen by setting:
+
+```bash
+export GSD_WEB_LOGIN_PASSWORD='your-strong-password'
+# optional
+export GSD_WEB_LOGIN_USERNAME='owner'
+```
+
+When enabled:
+
+- `/api/*` requires **both** bearer token and a valid httpOnly session cookie.
+- Session cookie is `SameSite=Strict` and never exposed to JavaScript.
+- `Origin` checks are still enforced for CSRF protection.
+
+This is recommended whenever you expose `gsd --web` beyond plain localhost (for example, tunnels or LAN access).
 
 ## Platform Notes
 

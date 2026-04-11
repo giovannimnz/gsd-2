@@ -480,6 +480,14 @@ async function waitForBootReady(url: string, timeoutMs = 180_000, stderr?: Writa
         consecutive5xx = 0
         // Host responded successfully — it's ready for the browser
         return
+      } else if (response.statusCode === 401) {
+        if (!hostUp) {
+          hostUp = true
+          stderr?.write(`[gsd] Web host ready (login required).\n`)
+        }
+        // A 401 at boot readiness time means the host is up and enforcing
+        // the optional login session gate.
+        return
       } else if (response.statusCode >= 500) {
         consecutive5xx++
         lastError = `http ${response.statusCode}`
@@ -584,8 +592,13 @@ export async function launchWebMode(
   const port = options.port ?? await (deps.resolvePort ?? reserveWebPort)(host)
   const authToken = randomBytes(32).toString('hex')
   const url = `http://${host}:${port}`
+  const envSource = deps.env ?? process.env
+  const loginPassword = envSource.GSD_WEB_LOGIN_PASSWORD?.trim()
+  const webLoginEnabled = Boolean(loginPassword)
+  const webLoginSessionToken = webLoginEnabled ? randomBytes(32).toString('hex') : null
+  const webLoginUsername = (envSource.GSD_WEB_LOGIN_USERNAME ?? envSource.USER ?? 'owner').trim() || 'owner'
   const env = {
-    ...(deps.env ?? process.env),
+    ...envSource,
     HOSTNAME: host,
     PORT: String(port),
     GSD_WEB_HOST: host,
@@ -597,6 +610,12 @@ export async function launchWebMode(
     GSD_WEB_HOST_KIND: resolution.kind,
     ...(resolution.kind === 'source-dev' ? { NEXT_PUBLIC_GSD_DEV: '1' } : {}),
     ...(options.allowedOrigins?.length ? { GSD_WEB_ALLOWED_ORIGINS: options.allowedOrigins.join(',') } : {}),
+    ...(webLoginEnabled
+      ? {
+          GSD_WEB_LOGIN_SESSION_TOKEN: webLoginSessionToken as string,
+          GSD_WEB_LOGIN_USERNAME: webLoginUsername,
+        }
+      : {}),
   }
 
   try {
@@ -682,6 +701,10 @@ export async function launchWebMode(
     }
     emitLaunchStatus(stderr, failure)
     return failure
+  }
+
+  if (webLoginEnabled) {
+    stderr.write(`[gsd] Web login enabled for user "${webLoginUsername}" (password from GSD_WEB_LOGIN_PASSWORD).\n`)
   }
 
   try {

@@ -129,6 +129,7 @@ Full documentation is in the [`docs/`](./docs/) directory:
 - **[Token Optimization](./docs/user-docs/token-optimization.md)** — profiles, context compression, complexity routing
 - **[Cost Management](./docs/user-docs/cost-management.md)** — budgets, tracking, projections
 - **[Git Strategy](./docs/user-docs/git-strategy.md)** — worktree isolation, branching, merge behavior
+- **[Fork Sync Workflow](./docs/user-docs/fork-sync.md)** — keep your fork updated from upstream without losing custom branches
 - **[Parallel Orchestration](./docs/user-docs/parallel-orchestration.md)** — run multiple milestones simultaneously
 - **[Working in Teams](./docs/user-docs/working-in-teams.md)** — unique IDs, shared artifacts
 - **[Skills](./docs/user-docs/skills.md)** — bundled skills, discovery, custom authoring

@@ -16,14 +16,29 @@ interface WebPreferences {
 export async function GET(): Promise<Response> {
   try {
     if (!existsSync(webPreferencesPath)) {
-      return Response.json({});
+      return Response.json({}, {
+        headers: {
+          "Cache-Control": "private, max-age=5, stale-while-revalidate=20",
+          Vary: "Authorization",
+        },
+      });
     }
     const raw = readFileSync(webPreferencesPath, "utf-8");
     const prefs: WebPreferences = JSON.parse(raw);
-    return Response.json(prefs);
+    return Response.json(prefs, {
+      headers: {
+        "Cache-Control": "private, max-age=5, stale-while-revalidate=20",
+        Vary: "Authorization",
+      },
+    });
   } catch {
     // File corrupt or unreadable — return empty
-    return Response.json({});
+    return Response.json({}, {
+      headers: {
+        "Cache-Control": "private, max-age=5, stale-while-revalidate=20",
+        Vary: "Authorization",
+      },
+    });
   }
 }
 

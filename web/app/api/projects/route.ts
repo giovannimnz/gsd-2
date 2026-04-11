@@ -2,7 +2,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
-import { discoverProjects } from "../../../../src/web/project-discovery-service.ts";
+import { discoverProjects, invalidateProjectDiscoveryCache } from "../../../../src/web/project-discovery-service.ts";
 import { detectProjectKind } from "../../../../src/web/bridge-service.ts";
 
 export const runtime = "nodejs";
@@ -31,7 +31,10 @@ export async function GET(request: Request): Promise<Response> {
   const projects = discoverProjects(expandTilde(root), detail);
   return Response.json(projects, {
     headers: {
-      "Cache-Control": "no-store",
+      // Per-browser cache (not shared cache) with short TTL for snappier UI
+      // while keeping project list reasonably fresh.
+      "Cache-Control": "private, max-age=5, stale-while-revalidate=20",
+      Vary: "Authorization",
     },
   });
 }
@@ -83,6 +86,7 @@ export async function POST(request: Request): Promise<Response> {
 
     // Detect project kind for consistent response
     const { kind, signals } = detectProjectKind(projectPath);
+    invalidateProjectDiscoveryCache(devRoot);
 
     return Response.json(
       {

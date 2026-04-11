@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { ProjectDetectionKind, ProjectDetectionSignals } from "./bridge-service.ts";
-import { detectMonorepo, detectProjectKind } from "./bridge-service.ts";
+import { detectProjectKind } from "./bridge-service.ts";
 
 // ─── Project Discovery ─────────────────────────────────────────────────────
 
@@ -24,6 +24,34 @@ export interface ProjectMetadata {
 
 /** Excluded directory names when scanning a dev root. */
 const EXCLUDED_DIRS = new Set(["node_modules", ".git"]);
+
+interface DiscoveryCacheEntry {
+  expiresAt: number;
+  projects: ProjectMetadata[];
+}
+
+const DISCOVERY_CACHE_TTL_MS = Number.isFinite(Number.parseInt(process.env.GSD_WEB_PROJECT_DISCOVERY_CACHE_MS ?? "5000", 10))
+  ? Math.max(0, Number.parseInt(process.env.GSD_WEB_PROJECT_DISCOVERY_CACHE_MS ?? "5000", 10))
+  : 5000;
+
+const discoveryCache = new Map<string, DiscoveryCacheEntry>();
+
+function cacheKey(devRootPath: string, includeProgress: boolean): string {
+  return `${includeProgress ? 1 : 0}:${devRootPath}`;
+}
+
+export function invalidateProjectDiscoveryCache(devRootPath?: string): void {
+  if (!devRootPath) {
+    discoveryCache.clear();
+    return;
+  }
+
+  for (const key of Array.from(discoveryCache.keys())) {
+    if (key.endsWith(`:${devRootPath}`)) {
+      discoveryCache.delete(key);
+    }
+  }
+}
 
 /**
  * Parse a project's `.gsd/STATE.md` for active milestone, slice, phase,
@@ -82,6 +110,16 @@ export function readProjectProgress(projectPath: string): ProjectProgressInfo | 
  * Results are sorted alphabetically by name.
  */
 export function discoverProjects(devRootPath: string, includeProgress?: boolean): ProjectMetadata[] {
+  const includeProgressBool = Boolean(includeProgress);
+  const key = cacheKey(devRootPath, includeProgressBool);
+
+  if (DISCOVERY_CACHE_TTL_MS > 0) {
+    const cached = discoveryCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.projects;
+    }
+  }
+
   try {
     // ── Check if the root itself is a project/monorepo ──────────────
     // If the devRoot has a .git repo AND looks like a monorepo (pnpm-workspace,
@@ -90,14 +128,23 @@ export function discoverProjects(devRootPath: string, includeProgress?: boolean)
     const rootDetection = detectProjectKind(devRootPath);
     if (rootDetection.signals.isMonorepo) {
       const stat = statSync(devRootPath);
-      return [{
+      const result = [{
         name: basename(devRootPath),
         path: devRootPath,
         kind: rootDetection.kind,
         signals: rootDetection.signals,
         lastModified: stat.mtimeMs,
-        ...(includeProgress ? { progress: readProjectProgress(devRootPath) } : {}),
+        ...(includeProgressBool ? { progress: readProjectProgress(devRootPath) } : {}),
       }];
+
+      if (DISCOVERY_CACHE_TTL_MS > 0) {
+        discoveryCache.set(key, {
+          projects: result,
+          expiresAt: Date.now() + DISCOVERY_CACHE_TTL_MS,
+        });
+      }
+
+      return result;
     }
 
     // ── Standard multi-project scan ─────────────────────────────────
@@ -119,14 +166,28 @@ export function discoverProjects(devRootPath: string, includeProgress?: boolean)
         kind,
         signals,
         lastModified: stat.mtimeMs,
-        ...(includeProgress ? { progress: readProjectProgress(fullPath) } : {}),
+        ...(includeProgressBool ? { progress: readProjectProgress(fullPath) } : {}),
       });
     }
 
     projects.sort((a, b) => a.name.localeCompare(b.name));
+
+    if (DISCOVERY_CACHE_TTL_MS > 0) {
+      discoveryCache.set(key, {
+        projects,
+        expiresAt: Date.now() + DISCOVERY_CACHE_TTL_MS,
+      });
+    }
+
     return projects;
   } catch {
     // devRootPath doesn't exist or isn't readable
+    if (DISCOVERY_CACHE_TTL_MS > 0) {
+      discoveryCache.set(key, {
+        projects: [],
+        expiresAt: Date.now() + DISCOVERY_CACHE_TTL_MS,
+      });
+    }
     return [];
   }
 }

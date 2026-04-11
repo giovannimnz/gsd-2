@@ -14,6 +14,7 @@ export type KnownApi =
 	| "google-generative-ai"
 	| "google-gemini-cli"
 	| "google-vertex"
+	| "qwen-code"
 	| "ollama-chat";
 
 export type Api = KnownApi | (string & {});

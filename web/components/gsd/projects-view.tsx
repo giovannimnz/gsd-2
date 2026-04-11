@@ -42,6 +42,7 @@ import {
 } from "@/components/ui/sheet"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { authFetch } from "@/lib/auth"
+import { LoginGate } from "@/components/gsd/login-gate"
 import {
   Dialog,
   DialogContent,
@@ -965,6 +966,10 @@ export function DevRootSettingsSection() {
 // Mirrors the app shell layout: header bar, sidebar-width left column,
 // project list as the main content area.
 
+function isUnauthorizedError(message: string): boolean {
+  return /\b401\b/.test(message)
+}
+
 export function ProjectSelectionGate() {
   const manager = useProjectStoreManager()
 
@@ -975,10 +980,15 @@ export function ProjectSelectionGate() {
   const [newProjectOpen, setNewProjectOpen] = useState(false)
   const [changeRootOpen, setChangeRootOpen] = useState(false)
   const [filter, setFilter] = useState("")
+  const [needsLogin, setNeedsLogin] = useState(false)
+  const [reloadNonce, setReloadNonce] = useState(0)
 
   const loadProjects = useCallback(async (root: string) => {
     const projRes = await authFetch(`/api/projects?root=${encodeURIComponent(root)}&detail=true`)
-    if (!projRes.ok) throw new Error(`Failed to discover projects: ${projRes.status}`)
+    if (!projRes.ok) {
+      if (projRes.status === 401) throw new Error("Unauthorized (401)")
+      throw new Error(`Failed to discover projects: ${projRes.status}`)
+    }
     return (await projRes.json()) as ProjectMetadata[]
   }, [])
 
@@ -990,7 +1000,10 @@ export function ProjectSelectionGate() {
       setError(null)
       try {
         const prefsRes = await authFetch("/api/preferences")
-        if (!prefsRes.ok) throw new Error(`Failed to load preferences: ${prefsRes.status}`)
+        if (!prefsRes.ok) {
+          if (prefsRes.status === 401) throw new Error("Unauthorized (401)")
+          throw new Error(`Failed to load preferences: ${prefsRes.status}`)
+        }
         const prefs = await prefsRes.json()
 
         if (!prefs.devRoot) {
@@ -1002,10 +1015,20 @@ export function ProjectSelectionGate() {
 
         setDevRoot(prefs.devRoot)
         const discovered = await loadProjects(prefs.devRoot)
-        if (!cancelled) setProjects(discovered)
+        if (!cancelled) {
+          setNeedsLogin(false)
+          setProjects(discovered)
+        }
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Unknown error")
+          const message = err instanceof Error ? err.message : "Unknown error"
+          if (isUnauthorizedError(message)) {
+            setNeedsLogin(true)
+            setError(null)
+            setProjects([])
+          } else {
+            setError(message)
+          }
         }
       } finally {
         if (!cancelled) setLoading(false)
@@ -1016,7 +1039,7 @@ export function ProjectSelectionGate() {
     return () => {
       cancelled = true
     }
-  }, [loadProjects])
+  }, [loadProjects, reloadNonce])
 
   const handleDevRootSaved = useCallback(
     async (newRoot: string) => {
@@ -1081,6 +1104,13 @@ export function ProjectSelectionGate() {
 
   const hasProjects = !loading && sortedProjects.length > 0
   const showFilter = sortedProjects.length > 5
+
+  if (needsLogin) {
+    return <LoginGate onAuthenticated={() => {
+      setNeedsLogin(false)
+      setReloadNonce((value) => value + 1)
+    }} />
+  }
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground" data-testid="project-selection-gate">

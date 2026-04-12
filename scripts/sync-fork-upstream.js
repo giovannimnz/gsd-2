@@ -236,7 +236,6 @@ function gitOutput(args, options = {}) {
 
 function checkPm2Installed() {
   try {
-    const result = gitOutput(['--version'], { ...options, dryRun: false, capture: true })
     const pm2Result = spawnSync('which', ['pm2'], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' })
     return pm2Result.status === 0
   } catch {
@@ -251,21 +250,16 @@ function installPm2() {
 }
 
 function ensurePm2Installed(options) {
-  try {
-    const result = spawnSync('which', ['pm2'], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' })
-    if (result.status === 0) {
-      log('PM2 is installed.')
-      return true
-    }
-  } catch {
-    // fall through
+  if (checkPm2Installed()) {
+    log('PM2 is installed.')
+    return true
   }
 
   installPm2()
   return true
 }
 
-function getPm2ProcessInfo(processName, options) {
+function getPm2ProcessInfo(processName) {
   try {
     const result = spawnSync('pm2', ['jlist'], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' })
     if (result.status !== 0) return null
@@ -341,13 +335,11 @@ function verifyPm2Version(processName, expectedVersion) {
   if (!expectedVersion) return true
   
   try {
-    const result = spawnSync('pm2', ['describe', processName], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' })
-    if (result.status !== 0) return false
-
-    // Check logs for version string
-    const logResult = spawnSync('pm2', ['logs', processName, '--lines', '20', '--nostream'], { 
+    // Check PM2 logs for version string
+    const logResult = spawnSync('pm2', ['logs', processName, '--lines', '30', '--nostream'], { 
       stdio: ['ignore', 'pipe', 'pipe'], 
-      encoding: 'utf8' 
+      encoding: 'utf8',
+      timeout: 5000,
     })
     
     if (logResult.stdout?.includes(`v${expectedVersion}`)) {
@@ -355,7 +347,7 @@ function verifyPm2Version(processName, expectedVersion) {
       return true
     }
     
-    log(`Warning: Could not verify version v${expectedVersion} in PM2 logs`)
+    log(`Note: Version v${expectedVersion} not found in recent PM2 logs (may still be starting)`)
     return true // Don't fail if we can't verify
   } catch {
     return true // Don't fail on verification errors

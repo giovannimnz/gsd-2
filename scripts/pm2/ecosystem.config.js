@@ -8,7 +8,7 @@ module.exports = {
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
-        HOSTNAME: '127.0.0.1',
+        HOSTNAME: '0.0.0.0',
         PORT: '1027',
         GSD_WEB_DAEMON_MODE: '1',
         GSD_WEB_PACKAGE_ROOT: process.env.GSD_WEB_PACKAGE_ROOT || process.cwd(),

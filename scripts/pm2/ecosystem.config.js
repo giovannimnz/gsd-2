@@ -12,7 +12,7 @@ module.exports = {
         PORT: '1027',
         GSD_WEB_DAEMON_MODE: '1',
         GSD_WEB_PACKAGE_ROOT: process.env.GSD_WEB_PACKAGE_ROOT || process.cwd(),
-        GSD_WEB_ALLOWED_ORIGINS: process.env.GSD_WEB_ALLOWED_ORIGINS || 'https://gsd.atius.com.br',
+        GSD_WEB_ALLOWED_ORIGINS: process.env.GSD_WEB_ALLOWED_ORIGINS || 'https://gsd.atius.com.br,http://gsd.atius-srv-1',
       },
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
       merge_logs: true,

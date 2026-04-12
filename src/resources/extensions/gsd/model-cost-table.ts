@@ -18,51 +18,69 @@ export interface ModelCostEntry {
 
 /**
  * Bundled cost table for known models.
+ * Prices sourced from OpenRouter (openrouter.ai) as of 2026-04-11.
+ * Costs are per-million tokens in USD.
  * Updated periodically with GSD releases.
  */
 export const BUNDLED_COST_TABLE: ModelCostEntry[] = [
-  // Anthropic
-  { id: "claude-opus-4-6", inputPer1k: 0.015, outputPer1k: 0.075, updatedAt: "2025-03-15" },
-  { id: "claude-sonnet-4-6", inputPer1k: 0.003, outputPer1k: 0.015, updatedAt: "2025-03-15" },
-  { id: "claude-haiku-4-5", inputPer1k: 0.0008, outputPer1k: 0.004, updatedAt: "2025-03-15" },
-  { id: "claude-sonnet-4-5-20250514", inputPer1k: 0.003, outputPer1k: 0.015, updatedAt: "2025-03-15" },
-  { id: "claude-3-5-sonnet-latest", inputPer1k: 0.003, outputPer1k: 0.015, updatedAt: "2025-03-15" },
-  { id: "claude-3-5-haiku-latest", inputPer1k: 0.0008, outputPer1k: 0.004, updatedAt: "2025-03-15" },
-  { id: "claude-3-opus-latest", inputPer1k: 0.015, outputPer1k: 0.075, updatedAt: "2025-03-15" },
+  // Anthropic (via OpenRouter)
+  { id: "claude-opus-4-6", inputPer1k: 0.005, outputPer1k: 0.025, updatedAt: "2026-04-11" },
+  { id: "claude-sonnet-4-6", inputPer1k: 0.003, outputPer1k: 0.015, updatedAt: "2026-04-11" },
+  { id: "claude-haiku-4-5", inputPer1k: 0.001, outputPer1k: 0.005, updatedAt: "2026-04-11" },
+  { id: "claude-sonnet-4-5-20250514", inputPer1k: 0.003, outputPer1k: 0.015, updatedAt: "2026-04-11" },
+  { id: "claude-3-5-sonnet-latest", inputPer1k: 0.003, outputPer1k: 0.015, updatedAt: "2026-04-11" },
+  { id: "claude-3-5-haiku-latest", inputPer1k: 0.0008, outputPer1k: 0.004, updatedAt: "2026-04-11" },
+  { id: "claude-3-opus-latest", inputPer1k: 0.015, outputPer1k: 0.075, updatedAt: "2026-04-11" },
 
-  // OpenAI
-  { id: "gpt-4o", inputPer1k: 0.0025, outputPer1k: 0.01, updatedAt: "2025-03-15" },
-  { id: "gpt-4o-mini", inputPer1k: 0.00015, outputPer1k: 0.0006, updatedAt: "2025-03-15" },
-  { id: "gpt-4.1", inputPer1k: 0.002, outputPer1k: 0.008, updatedAt: "2026-03-29" },
-  { id: "gpt-4.1-mini", inputPer1k: 0.0004, outputPer1k: 0.0016, updatedAt: "2026-03-29" },
-  { id: "gpt-4.1-nano", inputPer1k: 0.0001, outputPer1k: 0.0004, updatedAt: "2026-03-29" },
-  { id: "gpt-5", inputPer1k: 0.01, outputPer1k: 0.04, updatedAt: "2026-03-29" },
-  { id: "gpt-5-mini", inputPer1k: 0.0003, outputPer1k: 0.0012, updatedAt: "2026-03-29" },
-  { id: "gpt-5-nano", inputPer1k: 0.0001, outputPer1k: 0.0004, updatedAt: "2026-03-29" },
-  { id: "gpt-5-pro", inputPer1k: 0.015, outputPer1k: 0.06, updatedAt: "2026-03-29" },
-  { id: "o1", inputPer1k: 0.015, outputPer1k: 0.06, updatedAt: "2025-03-15" },
-  { id: "o3", inputPer1k: 0.015, outputPer1k: 0.06, updatedAt: "2025-03-15" },
-  { id: "o4-mini", inputPer1k: 0.005, outputPer1k: 0.02, updatedAt: "2026-03-29" },
-  { id: "o4-mini-deep-research", inputPer1k: 0.005, outputPer1k: 0.02, updatedAt: "2026-03-29" },
-  { id: "gpt-4-turbo", inputPer1k: 0.01, outputPer1k: 0.03, updatedAt: "2025-03-15" },
+  // OpenAI (via OpenRouter)
+  { id: "gpt-4o", inputPer1k: 0.0025, outputPer1k: 0.01, updatedAt: "2026-04-11" },
+  { id: "gpt-4o-mini", inputPer1k: 0.00015, outputPer1k: 0.0006, updatedAt: "2026-04-11" },
+  { id: "gpt-4.1", inputPer1k: 0.002, outputPer1k: 0.008, updatedAt: "2026-04-11" },
+  { id: "gpt-4.1-mini", inputPer1k: 0.0004, outputPer1k: 0.0016, updatedAt: "2026-04-11" },
+  { id: "gpt-4.1-nano", inputPer1k: 0.0001, outputPer1k: 0.0004, updatedAt: "2026-04-11" },
+  { id: "gpt-5", inputPer1k: 0.00125, outputPer1k: 0.01, updatedAt: "2026-04-11" },
+  { id: "gpt-5-mini", inputPer1k: 0.0003, outputPer1k: 0.0012, updatedAt: "2026-04-11" },
+  { id: "gpt-5-nano", inputPer1k: 0.0001, outputPer1k: 0.0004, updatedAt: "2026-04-11" },
+  { id: "gpt-5-pro", inputPer1k: 0.015, outputPer1k: 0.06, updatedAt: "2026-04-11" },
+  { id: "o1", inputPer1k: 0.015, outputPer1k: 0.06, updatedAt: "2026-04-11" },
+  { id: "o3", inputPer1k: 0.015, outputPer1k: 0.06, updatedAt: "2026-04-11" },
+  { id: "o4-mini", inputPer1k: 0.005, outputPer1k: 0.02, updatedAt: "2026-04-11" },
+  { id: "o4-mini-deep-research", inputPer1k: 0.005, outputPer1k: 0.02, updatedAt: "2026-04-11" },
+  { id: "gpt-4-turbo", inputPer1k: 0.01, outputPer1k: 0.03, updatedAt: "2026-04-11" },
 
-  // OpenAI Codex
-  { id: "gpt-5.1", inputPer1k: 0.005, outputPer1k: 0.02, updatedAt: "2026-03-29" },
-  { id: "gpt-5.1-codex-max", inputPer1k: 0.003, outputPer1k: 0.012, updatedAt: "2026-03-29" },
-  { id: "gpt-5.1-codex-mini", inputPer1k: 0.0003, outputPer1k: 0.0012, updatedAt: "2026-03-29" },
-  { id: "gpt-5.2", inputPer1k: 0.005, outputPer1k: 0.02, updatedAt: "2026-03-29" },
-  { id: "gpt-5.2-codex", inputPer1k: 0.005, outputPer1k: 0.02, updatedAt: "2026-03-29" },
-  { id: "gpt-5.3-codex", inputPer1k: 0.005, outputPer1k: 0.02, updatedAt: "2026-03-29" },
-  { id: "gpt-5.3-codex-spark", inputPer1k: 0.0003, outputPer1k: 0.0012, updatedAt: "2026-03-29" },
-  { id: "gpt-5.4", inputPer1k: 0.005, outputPer1k: 0.02, updatedAt: "2026-03-29" },
+  // OpenAI Codex (via OpenRouter)
+  { id: "gpt-5.1", inputPer1k: 0.005, outputPer1k: 0.02, updatedAt: "2026-04-11" },
+  { id: "gpt-5.1-codex-max", inputPer1k: 0.003, outputPer1k: 0.012, updatedAt: "2026-04-11" },
+  { id: "gpt-5.1-codex-mini", inputPer1k: 0.0003, outputPer1k: 0.0012, updatedAt: "2026-04-11" },
+  { id: "gpt-5.2", inputPer1k: 0.005, outputPer1k: 0.02, updatedAt: "2026-04-11" },
+  { id: "gpt-5.2-codex", inputPer1k: 0.005, outputPer1k: 0.02, updatedAt: "2026-04-11" },
+  { id: "gpt-5.3-codex", inputPer1k: 0.005, outputPer1k: 0.02, updatedAt: "2026-04-11" },
+  { id: "gpt-5.3-codex-spark", inputPer1k: 0.0003, outputPer1k: 0.0012, updatedAt: "2026-04-11" },
+  { id: "gpt-5.4", inputPer1k: 0.005, outputPer1k: 0.02, updatedAt: "2026-04-11" },
 
-  // Google
-  { id: "gemini-2.0-flash", inputPer1k: 0.0001, outputPer1k: 0.0004, updatedAt: "2025-03-15" },
-  { id: "gemini-flash-2.0", inputPer1k: 0.0001, outputPer1k: 0.0004, updatedAt: "2025-03-15" },
-  { id: "gemini-2.5-pro", inputPer1k: 0.00125, outputPer1k: 0.005, updatedAt: "2025-03-15" },
+  // Google (via OpenRouter)
+  { id: "gemini-2.0-flash", inputPer1k: 0.0001, outputPer1k: 0.0004, updatedAt: "2026-04-11" },
+  { id: "gemini-flash-2.0", inputPer1k: 0.0001, outputPer1k: 0.0004, updatedAt: "2026-04-11" },
+  { id: "gemini-2.5-pro", inputPer1k: 0.00125, outputPer1k: 0.01, updatedAt: "2026-04-11" },
 
-  // DeepSeek
-  { id: "deepseek-chat", inputPer1k: 0.00014, outputPer1k: 0.00028, updatedAt: "2025-03-15" },
+  // DeepSeek (via OpenRouter)
+  { id: "deepseek-chat", inputPer1k: 0.00032, outputPer1k: 0.00089, updatedAt: "2026-04-11" },
+
+  // xAI / Grok (via OpenRouter)
+  { id: "grok-code-fast-1", inputPer1k: 0.0002, outputPer1k: 0.0015, updatedAt: "2026-04-11" },
+
+  // GitHub Copilot models (via OpenRouter)
+  // Note: These use the same pricing as their base models on OpenRouter
+  { id: "copilot-chat", inputPer1k: 0.0025, outputPer1k: 0.01, updatedAt: "2026-04-11" },
+  { id: "copilot-gpt-4o", inputPer1k: 0.0025, outputPer1k: 0.01, updatedAt: "2026-04-11" },
+  { id: "copilot-claude-sonnet", inputPer1k: 0.003, outputPer1k: 0.015, updatedAt: "2026-04-11" },
+  { id: "copilot-claude-opus", inputPer1k: 0.005, outputPer1k: 0.025, updatedAt: "2026-04-11" },
+  { id: "copilot-gpt-5", inputPer1k: 0.00125, outputPer1k: 0.01, updatedAt: "2026-04-11" },
+  { id: "copilot-o1", inputPer1k: 0.015, outputPer1k: 0.06, updatedAt: "2026-04-11" },
+  { id: "copilot-gpt-4o-mini", inputPer1k: 0.00015, outputPer1k: 0.0006, updatedAt: "2026-04-11" },
+  { id: "copilot-claude-haiku", inputPer1k: 0.001, outputPer1k: 0.005, updatedAt: "2026-04-11" },
+  { id: "copilot-gemini-2.5-pro", inputPer1k: 0.00125, outputPer1k: 0.01, updatedAt: "2026-04-11" },
+  { id: "copilot-grok-code-fast-1", inputPer1k: 0.0002, outputPer1k: 0.0015, updatedAt: "2026-04-11" },
 ];
 
 /**

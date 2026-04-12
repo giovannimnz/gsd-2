@@ -11,7 +11,7 @@
 
 **Registros DNS:**
 ```
-gsd.atius-srv-1     → 10.1.1.1
+gsd.atius-srv-1     → 10.1.1.2  (Apache proxy)
 atius-srv-1         → 10.1.1.1
 atius-srv-2         → 10.1.1.2
 horistic-srv-1      → 10.1.1.3

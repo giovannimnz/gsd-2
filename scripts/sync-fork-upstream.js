@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+const PROJECT_ROOT = join(__dirname, '..')
 
 const DEFAULTS = {
   upstreamRemote: 'upstream',
@@ -16,6 +23,7 @@ const DEFAULTS = {
   pushCustom: true,
   build: true,
   autoPushAfterBuild: true,
+  pm2Restart: true,
   allowDirty: false,
   dryRun: false,
   restoreBranch: true,
@@ -47,6 +55,8 @@ function printHelp() {
       '  --no-build               Disable automatic build after sync.',
       '  --auto-push              Enable auto-push after successful build (enabled by default).',
       '  --no-auto-push           Disable auto-push after build.',
+      '  --pm2-restart            Restart gsd-web PM2 process after build (enabled by default).',
+      '  --no-pm2                 Disable PM2 restart after build.',
       '  --allow-dirty            Allow running with uncommitted changes.',
       '  --dry-run                Print commands without executing them.',
       '  --no-restore-branch      Leave HEAD on the last branch touched.',
@@ -154,6 +164,14 @@ function parseArgs(argv) {
       options.autoPushAfterBuild = true
       continue
     }
+    if (arg === '--no-pm2') {
+      options.pm2Restart = false
+      continue
+    }
+    if (arg === '--pm2-restart') {
+      options.pm2Restart = true
+      continue
+    }
     if (arg === '--allow-dirty') {
       options.allowDirty = true
       continue
@@ -214,6 +232,134 @@ function git(args, options = {}) {
 
 function gitOutput(args, options = {}) {
   return git(args, { ...options, dryRun: false, capture: true }).stdout.trim()
+}
+
+function checkPm2Installed() {
+  try {
+    const result = gitOutput(['--version'], { ...options, dryRun: false, capture: true })
+    const pm2Result = spawnSync('which', ['pm2'], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' })
+    return pm2Result.status === 0
+  } catch {
+    return false
+  }
+}
+
+function installPm2() {
+  log('PM2 not found. Installing globally...')
+  run('npm', ['install', '-g', 'pm2'])
+  log('PM2 installed successfully.')
+}
+
+function ensurePm2Installed(options) {
+  try {
+    const result = spawnSync('which', ['pm2'], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' })
+    if (result.status === 0) {
+      log('PM2 is installed.')
+      return true
+    }
+  } catch {
+    // fall through
+  }
+
+  installPm2()
+  return true
+}
+
+function getPm2ProcessInfo(processName, options) {
+  try {
+    const result = spawnSync('pm2', ['jlist'], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' })
+    if (result.status !== 0) return null
+
+    const processes = JSON.parse(result.stdout)
+    const process = processes.find(p => p.name === processName)
+    if (!process) return null
+
+    return {
+      name: process.name,
+      status: process.pm2_env?.status || process.status,
+      pid: process.pid,
+      restarts: process.pm2_env?.restart_time ?? 0,
+      uptime: process.pm2_env?.pm_uptime,
+    }
+  } catch {
+    return null
+  }
+}
+
+function isPm2ProcessOnline(processName) {
+  const info = getPm2ProcessInfo(processName)
+  return info?.status === 'online'
+}
+
+function getPackageVersion() {
+  try {
+    const pkgPath = join(PROJECT_ROOT, 'package.json')
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
+    return pkg.version
+  } catch {
+    return null
+  }
+}
+
+function restartPm2Process(processName) {
+  log(`Restarting PM2 process '${processName}'...`)
+  
+  // Check if process exists
+  const infoBefore = getPm2ProcessInfo(processName)
+  
+  if (infoBefore) {
+    // Process exists, restart it
+    run('pm2', ['restart', processName])
+  } else {
+    // Process doesn't exist, start it
+    log(`Process '${processName}' not found. Starting...`)
+    const ecosystemPath = join(PROJECT_ROOT, 'scripts/pm2/ecosystem.config.js')
+    run('pm2', ['start', ecosystemPath])
+  }
+
+  log(`PM2 process '${processName}' restart initiated.`)
+}
+
+function waitForPm2Online(processName, timeoutMs = 45000) {
+  log(`Waiting for PM2 process '${processName}' to be online...`)
+  const start = Date.now()
+  
+  while (Date.now() - start < timeoutMs) {
+    if (isPm2ProcessOnline(processName)) {
+      const info = getPm2ProcessInfo(processName)
+      const uptime = info?.uptime ? new Date(info.uptime).toISOString() : 'unknown'
+      log(`PM2 process '${processName}' is online (restarts: ${info?.restarts ?? 0}).`)
+      return true
+    }
+    spawnSync('sleep', ['1'])
+  }
+  
+  throw new Error(`Timeout: PM2 process '${processName}' did not come online within ${timeoutMs / 1000}s`)
+}
+
+function verifyPm2Version(processName, expectedVersion) {
+  if (!expectedVersion) return true
+  
+  try {
+    const result = spawnSync('pm2', ['describe', processName], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' })
+    if (result.status !== 0) return false
+
+    // Check logs for version string
+    const logResult = spawnSync('pm2', ['logs', processName, '--lines', '20', '--nostream'], { 
+      stdio: ['ignore', 'pipe', 'pipe'], 
+      encoding: 'utf8' 
+    })
+    
+    if (logResult.stdout?.includes(`v${expectedVersion}`)) {
+      log(`Verified: PM2 process '${processName}' is running version v${expectedVersion}`)
+      return true
+    }
+    
+    log(`Warning: Could not verify version v${expectedVersion} in PM2 logs`)
+    return true // Don't fail if we can't verify
+  } catch {
+    return true // Don't fail on verification errors
+  }
 }
 
 function generateCommitMessage(options) {
@@ -451,6 +597,24 @@ async function main() {
           pushBranch(customBranch, options.originRemote, forceCustom, options)
         }
         log('Auto-push completed successfully.')
+      }
+
+      // PM2 restart after successful build
+      if (options.pm2Restart) {
+        try {
+          const currentVersion = getPackageVersion()
+          log(`Current GSD version: v${currentVersion || 'unknown'}`)
+
+          ensurePm2Installed(options)
+          restartPm2Process('gsd-web')
+          waitForPm2Online('gsd-web')
+          verifyPm2Version('gsd-web', currentVersion)
+
+          log('PM2 gsd-web process is running the new version.')
+        } catch (error) {
+          log(`Warning: PM2 restart failed: ${error.message}`)
+          log('You may need to manually restart the gsd-web process.')
+        }
       }
     }
 

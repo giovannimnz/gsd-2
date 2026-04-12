@@ -54,9 +54,9 @@ export const BUNDLED_COST_TABLE: ModelCostEntry[] = [
   { id: "gpt-5.1-codex-mini", inputPer1k: 0.0003, outputPer1k: 0.0012, updatedAt: "2026-04-11" },
   { id: "gpt-5.2", inputPer1k: 0.005, outputPer1k: 0.02, updatedAt: "2026-04-11" },
   { id: "gpt-5.2-codex", inputPer1k: 0.005, outputPer1k: 0.02, updatedAt: "2026-04-11" },
-  { id: "gpt-5.3-codex", inputPer1k: 0.005, outputPer1k: 0.02, updatedAt: "2026-04-11" },
+  { id: "gpt-5.3-codex", inputPer1k: 0.00175, outputPer1k: 0.014, updatedAt: "2026-04-11" },
   { id: "gpt-5.3-codex-spark", inputPer1k: 0.0003, outputPer1k: 0.0012, updatedAt: "2026-04-11" },
-  { id: "gpt-5.4", inputPer1k: 0.005, outputPer1k: 0.02, updatedAt: "2026-04-11" },
+  { id: "gpt-5.4", inputPer1k: 0.0025, outputPer1k: 0.015, updatedAt: "2026-04-11" },
 
   // Google (via OpenRouter)
   { id: "gemini-2.0-flash", inputPer1k: 0.0001, outputPer1k: 0.0004, updatedAt: "2026-04-11" },
@@ -81,6 +81,8 @@ export const BUNDLED_COST_TABLE: ModelCostEntry[] = [
   { id: "copilot-claude-haiku", inputPer1k: 0.001, outputPer1k: 0.005, updatedAt: "2026-04-11" },
   { id: "copilot-gemini-2.5-pro", inputPer1k: 0.00125, outputPer1k: 0.01, updatedAt: "2026-04-11" },
   { id: "copilot-grok-code-fast-1", inputPer1k: 0.0002, outputPer1k: 0.0015, updatedAt: "2026-04-11" },
+  { id: "copilot-gpt-5.3-codex", inputPer1k: 0.00175, outputPer1k: 0.014, updatedAt: "2026-04-11" },
+  { id: "copilot-gpt-5.4", inputPer1k: 0.0025, outputPer1k: 0.015, updatedAt: "2026-04-11" },
 ];
 
 /**

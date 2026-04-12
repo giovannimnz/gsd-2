@@ -28,13 +28,10 @@ export function LoginGate({ onAuthenticated }: LoginGateProps) {
   const [submitting, setSubmitting] = useState(false)
 
   const tokenAvailable = useMemo(() => Boolean(getAuthToken()), [])
+  const loginInputClassName =
+    "border-zinc-300/80 bg-background/70 shadow-none dark:border-zinc-600 dark:bg-zinc-950/60 focus-visible:border-zinc-500 dark:focus-visible:border-zinc-400 focus-visible:ring-zinc-400/20"
 
   const loadStatus = useCallback(async () => {
-    if (!tokenAvailable) {
-      setMode("missing-token")
-      return
-    }
-
     try {
       const response = await authFetch("/api/auth/me", {
         method: "GET",
@@ -44,7 +41,7 @@ export function LoginGate({ onAuthenticated }: LoginGateProps) {
 
       if (!response.ok) {
         if (response.status === 401) {
-          setMode("invalid-token")
+          setMode(tokenAvailable ? "invalid-token" : "missing-token")
           return
         }
         throw new Error(`Failed to check login status (${response.status})`)
@@ -57,11 +54,11 @@ export function LoginGate({ onAuthenticated }: LoginGateProps) {
         return
       }
 
-      setMode(payload.required ? "login" : "invalid-token")
+      setMode(payload.required ? "login" : tokenAvailable ? "invalid-token" : "missing-token")
     } catch (requestError) {
       const message = requestError instanceof Error ? requestError.message : String(requestError)
       setError(message)
-      setMode("invalid-token")
+      setMode(tokenAvailable ? "invalid-token" : "missing-token")
     }
   }, [onAuthenticated, tokenAvailable])
 
@@ -147,6 +144,7 @@ export function LoginGate({ onAuthenticated }: LoginGateProps) {
                 <Label htmlFor="web-login-username">Username</Label>
                 <Input
                   id="web-login-username"
+                  className={loginInputClassName}
                   value={username}
                   onChange={(event) => setUsername(event.target.value)}
                   autoComplete="off"
@@ -159,6 +157,7 @@ export function LoginGate({ onAuthenticated }: LoginGateProps) {
                 <Input
                   id="web-login-password"
                   type="password"
+                  className={loginInputClassName}
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                   autoComplete="off"

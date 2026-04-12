@@ -118,4 +118,6 @@ test("proxy enforces optional login session gate", () => {
   assert.match(proxySource, /GSD_WEB_LOGIN_PASSWORD/)
   assert.match(proxySource, /gsd_web_session/)
   assert.match(proxySource, /\/api\/auth\/login/)
+  assert.match(proxySource, /bearerBypassedByLogin/)
+  assert.match(proxySource, /hasValidSession/)
 })

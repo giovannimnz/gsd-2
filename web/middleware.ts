@@ -12,18 +12,18 @@ function isLoginBypassPath(pathname: string): boolean {
 }
 
 /**
- * Next.js middleware — validates bearer token and origin on all API routes.
+ * Next.js middleware — validates bearer token, origin, and login session on all API routes.
  *
- * The GSD_WEB_AUTH_TOKEN env var is set at server launch. Every /api/* request
- * must carry a matching `Authorization: Bearer <token>` header. EventSource
- * (SSE) connections may use the `_token` query parameter instead since the
- * EventSource API cannot set custom headers.
+ * Primary auth is bearer-token based (Authorization header or `_token` query
+ * param for SSE/EventSource).
+ *
+ * When web-login is enabled (GSD_WEB_LOGIN_PASSWORD), `/api/auth/*` endpoints
+ * are intentionally reachable without bearer so the login form can bootstrap.
+ * After successful login, a valid httpOnly session cookie can authenticate
+ * API requests without requiring the URL hash token.
  *
  * Additionally, if an `Origin` header is present, it must match the expected
- * localhost origin to prevent cross-site request forgery.
- *
- * Optional hardening: when GSD_WEB_LOGIN_PASSWORD is configured, API access
- * also requires a valid httpOnly session cookie set by /api/auth/login.
+ * host/port allowlist to prevent cross-site request forgery.
  */
 export function middleware(request: NextRequest): NextResponse | undefined {
   const { pathname } = request.nextUrl
@@ -32,6 +32,19 @@ export function middleware(request: NextRequest): NextResponse | undefined {
   if (!pathname.startsWith("/api/")) return NextResponse.next()
 
   const expectedToken = process.env.GSD_WEB_AUTH_TOKEN
+  const loginRequired = isLoginRequired()
+  const loginBypassPath = isLoginBypassPath(pathname)
+
+  const expectedSessionToken =
+    process.env.GSD_WEB_LOGIN_SESSION_TOKEN || process.env.GSD_WEB_AUTH_TOKEN
+
+  const sessionCookie = request.cookies.get(WEB_LOGIN_SESSION_COOKIE)?.value
+  const hasValidSession = Boolean(
+    loginRequired &&
+    expectedSessionToken &&
+    sessionCookie &&
+    sessionCookie === expectedSessionToken,
+  )
 
   // ── Origin / CORS check ────────────────────────────────────────────
   const origin = request.headers.get("origin")
@@ -74,7 +87,9 @@ export function middleware(request: NextRequest): NextResponse | undefined {
     token = request.nextUrl.searchParams.get("_token")
   }
 
-  if (expectedToken && (!token || token !== expectedToken)) {
+  const bearerBypassedByLogin = loginRequired && (loginBypassPath || hasValidSession)
+
+  if (expectedToken && !bearerBypassedByLogin && (!token || token !== expectedToken)) {
     return NextResponse.json(
       { error: "Unauthorized" },
       { status: 401 },
@@ -82,10 +97,7 @@ export function middleware(request: NextRequest): NextResponse | undefined {
   }
 
   // ── Optional username/password session gate ────────────────────────
-  if (isLoginRequired() && !isLoginBypassPath(pathname)) {
-    const expectedSessionToken =
-      process.env.GSD_WEB_LOGIN_SESSION_TOKEN || process.env.GSD_WEB_AUTH_TOKEN
-
+  if (loginRequired && !loginBypassPath) {
     if (!expectedSessionToken) {
       return NextResponse.json(
         { error: "Server login misconfigured" },
@@ -93,8 +105,7 @@ export function middleware(request: NextRequest): NextResponse | undefined {
       )
     }
 
-    const sessionCookie = request.cookies.get(WEB_LOGIN_SESSION_COOKIE)?.value
-    if (!sessionCookie || sessionCookie !== expectedSessionToken) {
+    if (!hasValidSession) {
       return NextResponse.json(
         { error: "Login required" },
         { status: 401 },

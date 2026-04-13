@@ -35,7 +35,6 @@ const DEFAULTS = {
 const PROTECTED_PATHS = [
   'scripts/vpn-access/',
   'scripts/pm2/',
-  'web/middleware.ts',
   'web/proxy.ts',
 ]
 

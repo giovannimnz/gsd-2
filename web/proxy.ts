@@ -12,7 +12,8 @@ function isLoginBypassPath(pathname: string): boolean {
 }
 
 /**
- * Next.js middleware — validates bearer token, origin, and login session on all API routes.
+ * Next.js proxy — validates bearer token, origin, and login session on all API routes.
+ * (Renamed from `middleware` to `proxy` per Next.js 15+ convention.)
  *
  * Primary auth is bearer-token based (Authorization header or `_token` query
  * param for SSE/EventSource).
@@ -25,7 +26,7 @@ function isLoginBypassPath(pathname: string): boolean {
  * Additionally, if an `Origin` header is present, it must match the expected
  * host/port allowlist to prevent cross-site request forgery.
  */
-export function middleware(request: NextRequest): NextResponse | undefined {
+export function proxy(request: NextRequest): NextResponse | undefined {
   const { pathname } = request.nextUrl
 
   // Only gate API routes

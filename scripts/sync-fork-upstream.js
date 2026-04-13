@@ -14,8 +14,8 @@ const DEFAULTS = {
   originRemote: 'origin',
   baseBranch: 'main',
   customBranch: undefined,
-  baseMode: 'rebase', // rebase | merge
-  customMode: 'rebase', // rebase | merge
+  baseMode: 'merge', // rebase | merge — merge is safer for forks with customizations
+  customMode: 'merge', // rebase | merge
   autoMergeCustomIntoBase: false,
   commitAfterSync: true,
   commitMessage: undefined,
@@ -27,7 +27,17 @@ const DEFAULTS = {
   allowDirty: false,
   dryRun: false,
   restoreBranch: true,
+  safeMode: true, // When true, protects custom directories and uses merge
 }
+
+// Directories and files that are custom modifications and should be protected
+// from accidental deletion during auto-commit
+const PROTECTED_PATHS = [
+  'scripts/vpn-access/',
+  'scripts/pm2/',
+  'web/middleware.ts',
+  'web/proxy.ts',
+]
 
 function printHelp() {
   process.stdout.write(
@@ -60,6 +70,9 @@ function printHelp() {
       '  --allow-dirty            Allow running with uncommitted changes.',
       '  --dry-run                Print commands without executing them.',
       '  --no-restore-branch      Leave HEAD on the last branch touched.',
+      '  --safe-mode              Protect custom files and use merge mode (default: enabled).',
+      '  --no-safe-mode           Disable safe mode (use rebase and no file protection).',
+      '  --show-diff              Show what will change before auto-committing.',
       '  -h, --help               Show this help.',
       '',
       'Examples:',
@@ -83,7 +96,7 @@ function log(message) {
 }
 
 function parseArgs(argv) {
-  const options = { ...DEFAULTS }
+  const options = { ...DEFAULTS, safeMode: DEFAULTS.safeMode, showDiff: false }
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
@@ -182,6 +195,18 @@ function parseArgs(argv) {
     }
     if (arg === '--no-restore-branch') {
       options.restoreBranch = false
+      continue
+    }
+    if (arg === '--safe-mode') {
+      options.safeMode = true
+      continue
+    }
+    if (arg === '--no-safe-mode') {
+      options.safeMode = false
+      continue
+    }
+    if (arg === '--show-diff') {
+      options.showDiff = true
       continue
     }
 
@@ -426,6 +451,59 @@ function hasLocalBranch(name, options) {
   }
 }
 
+function isProtectedPath(filePath) {
+  return PROTECTED_PATHS.some(p => filePath.startsWith(p) || filePath === p)
+}
+
+function getProtectedFiles(options) {
+  const output = gitOutput(['status', '--porcelain'], options)
+  if (!output) return []
+
+  const protectedFiles = []
+  for (const line of output.split('\n').filter(Boolean)) {
+    const file = line.substring(3).trim()
+    if (isProtectedPath(file)) {
+      protectedFiles.push(file)
+    }
+  }
+  return protectedFiles
+}
+
+function showDiffPreview(options) {
+  log('=== Changes that would be auto-committed ===')
+  try {
+    const diffOutput = gitOutput(['diff', '--cached', '--stat'], options)
+    if (diffOutput) {
+      log(diffOutput)
+    }
+    const statusOutput = gitOutput(['status', '--short'], options)
+    if (statusOutput) {
+      log('\nUnstaged changes:')
+      log(statusOutput)
+    }
+  } catch {
+    log('(Unable to preview changes)')
+  }
+  log('========================================')
+}
+
+function restoreProtectedFiles(files, options) {
+  if (files.length === 0) return
+
+  log(`Restoring ${files.length} protected file(s) to prevent accidental deletion...`)
+  // Reset protected files to HEAD state so they won't be staged for deletion
+  for (const file of files) {
+    try {
+      git(['checkout', 'HEAD', '--', file], options)
+      log(`  Restored: ${file}`)
+    } catch {
+      // File might be new (not in HEAD), just unstage it
+      git(['reset', '--', file], options)
+      log(`  Unstaged new file: ${file}`)
+    }
+  }
+}
+
 function checkoutBranch(name, options) {
   if (hasLocalBranch(name, options)) {
     git(['checkout', name], options)
@@ -457,6 +535,8 @@ function syncBranchFrom(branch, fromRef, mode, options) {
     git(args, options)
     return
   }
+  // Merge mode — no autostash needed, merge works with dirty tree
+  // when we've already committed our custom changes
   git(['merge', '--no-edit', fromRef], options)
 }
 
@@ -466,6 +546,17 @@ function mergeBranchIntoBase(baseBranch, sourceBranch, options) {
 }
 
 function pushBranch(branch, remote, forceWithLease, options) {
+  // In safe mode, avoid force pushes — they can overwrite custom work on origin
+  if (forceWithLease && options.safeMode) {
+    log(`Safe mode: skipping force-push to ${branch}, using regular push`)
+    try {
+      git(['push', remote, branch], options)
+    } catch (err) {
+      log(`Regular push failed, trying with --force-with-lease: ${err.message}`)
+      git(['push', '--force-with-lease', remote, branch], options)
+    }
+    return
+  }
   if (forceWithLease) {
     git(['push', '--force-with-lease', remote, branch], options)
     return
@@ -513,8 +604,24 @@ async function main() {
     const dirtyOutput = gitOutput(['status', '--porcelain'], options)
     if (dirtyOutput) {
       log('Auto-committing pending changes before sync...')
-      git(['add', '-A'], options)
-      
+
+      // Preview changes if requested
+      if (options.showDiff) {
+        showDiffPreview(options)
+      }
+
+      // In safe mode, protect custom files before staging
+      if (options.safeMode) {
+        git(['add', '-A'], options)
+        const protectedFiles = getProtectedFiles(options)
+        if (protectedFiles.length > 0) {
+          log(`Safe mode: protecting ${protectedFiles.length} custom file(s)...`)
+          restoreProtectedFiles(protectedFiles, options)
+        }
+      } else {
+        git(['add', '-A'], options)
+      }
+
       const commitMsg = options.commitMessage || generateCommitMessage(options)
       if (commitMsg) {
         try {
@@ -529,6 +636,16 @@ async function main() {
     }
   } else {
     ensureCleanTree(options)
+  }
+
+  // If safe mode is enabled and base mode is rebase, override to merge
+  if (options.safeMode && options.baseMode === 'rebase') {
+    log('Safe mode: overriding base-mode from rebase to merge for safety')
+    options.baseMode = 'merge'
+  }
+  if (options.safeMode && options.customMode === 'rebase') {
+    log('Safe mode: overriding custom-mode from rebase to merge for safety')
+    options.customMode = 'merge'
   }
 
   log(`Base branch: ${options.baseBranch}`)

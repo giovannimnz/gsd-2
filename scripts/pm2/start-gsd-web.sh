@@ -21,6 +21,11 @@ export GSD_WEB_PACKAGE_ROOT="$PACKAGE_ROOT"
 export GSD_WEB_ALLOWED_ORIGINS="${GSD_WEB_ALLOWED_ORIGINS:-https://gsd.atius.com.br}"
 export GSD_VERSION="$($NODE_BIN -p "require('$PACKAGE_ROOT/package.json').version")"
 
+# Avoid "Server login misconfigured" when login password is set without session token.
+if [ -n "${GSD_WEB_LOGIN_PASSWORD:-}" ] && [ -z "${GSD_WEB_LOGIN_SESSION_TOKEN:-}" ]; then
+  export GSD_WEB_LOGIN_SESSION_TOKEN="$(printf '%s' "${GSD_WEB_LOGIN_PASSWORD}:${HOSTNAME}:${PORT}" | sha256sum | awk '{print $1}')"
+fi
+
 cd "$STANDALONE_DIR"
 mkdir -p /home/ubuntu/.gsd 2>/dev/null || true
 printf '%s\n' "$$" > /home/ubuntu/.gsd/web-server.pid

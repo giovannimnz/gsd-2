@@ -546,16 +546,22 @@ function mergeBranchIntoBase(baseBranch, sourceBranch, options) {
 }
 
 function pushBranch(branch, remote, forceWithLease, options) {
-  // In safe mode, avoid force pushes — they can overwrite custom work on origin
-  if (forceWithLease && options.safeMode) {
-    log(`Safe mode: skipping force-push to ${branch}, using regular push`)
+  // In safe mode, try regular push first, then fall back to force-with-lease
+  if (options.safeMode) {
     try {
       git(['push', remote, branch], options)
+      log(`Pushed ${branch} to ${remote} (fast-forward)`)
+      return
     } catch (err) {
-      log(`Regular push failed, trying with --force-with-lease: ${err.message}`)
-      git(['push', '--force-with-lease', remote, branch], options)
+      // If regular push fails due to divergence, try force-with-lease
+      const isDivergenceError = err.message?.includes('non-fast-forward') || err.message?.includes('behind')
+      if (isDivergenceError) {
+        log(`Branch ${branch} has diverged from ${remote}/${branch}, using --force-with-lease to sync`)
+        git(['push', '--force-with-lease', remote, branch], options)
+        return
+      }
+      throw err
     }
-    return
   }
   if (forceWithLease) {
     git(['push', '--force-with-lease', remote, branch], options)

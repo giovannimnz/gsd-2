@@ -19,6 +19,7 @@
 import { existsSync, readFileSync, unlinkSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
+import type { DecisionMadeBy, GateRow } from "./types.js";
 import { MarkdownStorage } from "./storage-markdown.js";
 
 const _require = createRequire(import.meta.url);
@@ -179,14 +180,11 @@ async function migrateFromSqlite(dbPath: string, projectRoot: string, dryRun = f
           choice: row["choice"] as string,
           rationale: row["rationale"] as string,
           revisable: row["revisable"] as string,
-          made_by: row["made_by"] as string,
+          made_by: (row["made_by"] as DecisionMadeBy) ?? "agent",
           superseded_by: (row["superseded_by"] as string) ?? null,
         };
         if (!dryRun) {
-          mdStorage.insertDecision({
-            seq: decision.seq,
-            ...decision,
-          });
+          mdStorage.insertDecision(decision);
         }
         stats.decisions++;
       }

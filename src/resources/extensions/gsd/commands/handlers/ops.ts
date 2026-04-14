@@ -165,6 +165,11 @@ Examples:
     await handleMigrate(trimmed.replace(/^migrate\s*/, "").trim(), ctx, pi);
     return true;
   }
+  if (trimmed === "from-gsd2" || trimmed.startsWith("from-gsd2 ")) {
+    const { handleFromGSD2 } = await import("../../migrate-reverse/command.js");
+    await handleFromGSD2(trimmed.replace(/^from-gsd2\s*/, "").trim(), ctx, pi);
+    return true;
+  }
   if (trimmed === "remote" || trimmed.startsWith("remote ")) {
     await handleRemote(trimmed.replace(/^remote\s*/, "").trim(), ctx, pi);
     return true;

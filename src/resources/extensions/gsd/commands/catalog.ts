@@ -56,6 +56,7 @@ export const TOP_LEVEL_SUBCOMMANDS: readonly GsdCommandDefinition[] = [
   { cmd: "init", desc: "Project init wizard — detect, configure, bootstrap .gsd/" },
   { cmd: "setup", desc: "Global setup status and configuration" },
   { cmd: "migrate", desc: "Migrate a v1 .planning directory to .gsd format" },
+  { cmd: "from-gsd2", desc: "Reverse migrate: .gsd/ (GSD-2) back to .planning/ (v1)" },
   { cmd: "remote", desc: "Control remote auto-mode" },
   { cmd: "steer", desc: "Hard-steer plan documents during execution" },
   { cmd: "inspect", desc: "Show SQLite DB diagnostics" },

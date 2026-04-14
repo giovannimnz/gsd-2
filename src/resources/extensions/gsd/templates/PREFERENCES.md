@@ -71,6 +71,10 @@ remote_questions:
 uat_dispatch:
 post_unit_hooks: []
 pre_dispatch_hooks: []
+# Storage backend for GSD state
+# sqlite: uses SQLite (default, full-featured)
+# markdown: uses plain .md files (portable, no DB dependency)
+storage_backend: sqlite
 # experimental:
 #   rtk: false
 ---

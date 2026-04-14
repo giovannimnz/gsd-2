@@ -4,6 +4,10 @@
 //
 // Exposes a unified sync API for decisions and requirements storage.
 // Schema is initialized on first open with WAL mode for file-backed DBs.
+//
+// StorageBackend delegation: When a StorageBackend is set via setStorageBackend(),
+// all CRUD operations delegate to the backend instead of direct SQLite calls.
+// This enables file-based storage (MarkdownStorage) as an alternative to SQLite.
 
 import { createRequire } from "node:module";
 import { existsSync, copyFileSync, mkdirSync, realpathSync } from "node:fs";
@@ -12,6 +16,7 @@ import type { Decision, Requirement, GateRow, GateId, GateScope, GateStatus, Gat
 import { GSDError, GSD_STALE_STATE } from "./errors.js";
 import { getGateIdsForTurn, type OwnerTurn } from "./gate-registry.js";
 import { logError, logWarning } from "./workflow-logger.js";
+import type { StorageBackend, MilestoneRow, SliceRow, TaskRow, ArtifactRow, VerificationEvidenceRow, MilestonePlanningRecord, SlicePlanningRecord, TaskPlanningRecord } from "./storage-backend.js";
 
 const _require = createRequire(import.meta.url);
 
@@ -2450,4 +2455,1261 @@ export function getPendingGateCountForTurn(
   turn: OwnerTurn,
 ): number {
   return getPendingGatesForTurn(milestoneId, sliceId, turn).length;
+}
+
+// ─── StorageBackend Delegation Layer ─────────────────────────────────────
+// When a StorageBackend is configured, all CRUD operations delegate to it.
+// This enables file-based storage (MarkdownStorage) as a drop-in replacement
+// for SQLite. The backend is set via setStorageBackend() or automatically
+// via createStorageBackend() from storage-factory.ts.
+
+let _storageBackend: StorageBackend | null = null;
+
+/**
+ * Set the StorageBackend to use for all CRUD operations.
+ * When set, operations delegate to the backend instead of SQLite.
+ */
+export function setStorageBackend(backend: StorageBackend): void {
+  _storageBackend = backend;
+}
+
+/**
+ * Get the currently configured StorageBackend, or null if using direct SQLite.
+ */
+export function getStorageBackend(): StorageBackend | null {
+  return _storageBackend;
+}
+
+/**
+ * Reset the StorageBackend (useful for testing).
+ */
+export function resetStorageBackend(): void {
+  _storageBackend = null;
+}
+
+// ── Delegated Decision Operations ────────────────────────────────────────
+
+export function insertDecision(d: Omit<Decision, "seq">): void {
+  if (_storageBackend) { _storageBackend.insertDecision(d); return; }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  currentDb.prepare(
+    `INSERT INTO decisions (id, when_context, scope, decision, choice, rationale, revisable, made_by, superseded_by)
+     VALUES (:id, :when_context, :scope, :decision, :choice, :rationale, :revisable, :made_by, :superseded_by)`,
+  ).run({
+    ":id": d.id,
+    ":when_context": d.when_context,
+    ":scope": d.scope,
+    ":decision": d.decision,
+    ":choice": d.choice,
+    ":rationale": d.rationale,
+    ":revisable": d.revisable,
+    ":made_by": d.made_by ?? "agent",
+    ":superseded_by": d.superseded_by,
+  });
+}
+
+export function upsertDecision(d: Omit<Decision, "seq">): void {
+  if (_storageBackend) { _storageBackend.upsertDecision(d); return; }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  currentDb.prepare(
+    `INSERT INTO decisions (id, when_context, scope, decision, choice, rationale, revisable, made_by, superseded_by)
+     VALUES (:id, :when_context, :scope, :decision, :choice, :rationale, :revisable, :made_by, :superseded_by)
+     ON CONFLICT(id) DO UPDATE SET
+       when_context = excluded.when_context,
+       scope = excluded.scope,
+       decision = excluded.decision,
+       choice = excluded.choice,
+       rationale = excluded.rationale,
+       revisable = excluded.revisable,
+       made_by = excluded.made_by,
+       superseded_by = excluded.superseded_by`,
+  ).run({
+    ":id": d.id,
+    ":when_context": d.when_context,
+    ":scope": d.scope,
+    ":decision": d.decision,
+    ":choice": d.choice,
+    ":rationale": d.rationale,
+    ":revisable": d.revisable,
+    ":made_by": d.made_by ?? "agent",
+    ":superseded_by": d.superseded_by ?? null,
+  });
+}
+
+export function getDecisionById(id: string): Decision | null {
+  if (_storageBackend) return _storageBackend.getDecisionById(id);
+  if (!currentDb) return null;
+  const row = currentDb.prepare("SELECT * FROM decisions WHERE id = ?").get(id);
+  if (!row) return null;
+  return {
+    seq: row["seq"] as number,
+    id: row["id"] as string,
+    when_context: row["when_context"] as string,
+    scope: row["scope"] as string,
+    decision: row["decision"] as string,
+    choice: row["choice"] as string,
+    rationale: row["rationale"] as string,
+    revisable: row["revisable"] as string,
+    made_by: (row["made_by"] as string as import("./types.js").DecisionMadeBy) ?? "agent",
+    superseded_by: (row["superseded_by"] as string) ?? null,
+  };
+}
+
+export function getActiveDecisions(): Decision[] {
+  if (_storageBackend) return _storageBackend.getActiveDecisions();
+  if (!currentDb) return [];
+  const rows = currentDb.prepare("SELECT * FROM active_decisions").all();
+  return rows.map((row) => ({
+    seq: row["seq"] as number,
+    id: row["id"] as string,
+    when_context: row["when_context"] as string,
+    scope: row["scope"] as string,
+    decision: row["decision"] as string,
+    choice: row["choice"] as string,
+    rationale: row["rationale"] as string,
+    revisable: row["revisable"] as string,
+    made_by: (row["made_by"] as string as import("./types.js").DecisionMadeBy) ?? "agent",
+    superseded_by: null,
+  }));
+}
+
+// ── Delegated Requirement Operations ─────────────────────────────────────
+
+export function insertRequirement(r: Requirement): void {
+  if (_storageBackend) { _storageBackend.insertRequirement(r); return; }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  currentDb.prepare(
+    `INSERT INTO requirements (id, class, status, description, why, source, primary_owner, supporting_slices, validation, notes, full_content, superseded_by)
+     VALUES (:id, :class, :status, :description, :why, :source, :primary_owner, :supporting_slices, :validation, :notes, :full_content, :superseded_by)`,
+  ).run({
+    ":id": r.id,
+    ":class": r.class,
+    ":status": r.status,
+    ":description": r.description,
+    ":why": r.why,
+    ":source": r.source,
+    ":primary_owner": r.primary_owner,
+    ":supporting_slices": r.supporting_slices,
+    ":validation": r.validation,
+    ":notes": r.notes,
+    ":full_content": r.full_content,
+    ":superseded_by": r.superseded_by,
+  });
+}
+
+export function upsertRequirement(r: Requirement): void {
+  if (_storageBackend) { _storageBackend.upsertRequirement(r); return; }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  currentDb.prepare(
+    `INSERT OR REPLACE INTO requirements (id, class, status, description, why, source, primary_owner, supporting_slices, validation, notes, full_content, superseded_by)
+     VALUES (:id, :class, :status, :description, :why, :source, :primary_owner, :supporting_slices, :validation, :notes, :full_content, :superseded_by)`,
+  ).run({
+    ":id": r.id,
+    ":class": r.class,
+    ":status": r.status,
+    ":description": r.description,
+    ":why": r.why,
+    ":source": r.source,
+    ":primary_owner": r.primary_owner,
+    ":supporting_slices": r.supporting_slices,
+    ":validation": r.validation,
+    ":notes": r.notes,
+    ":full_content": r.full_content,
+    ":superseded_by": r.superseded_by ?? null,
+  });
+}
+
+export function getRequirementById(id: string): Requirement | null {
+  if (_storageBackend) return _storageBackend.getRequirementById(id);
+  if (!currentDb) return null;
+  const row = currentDb.prepare("SELECT * FROM requirements WHERE id = ?").get(id);
+  if (!row) return null;
+  return {
+    id: row["id"] as string,
+    class: row["class"] as string,
+    status: row["status"] as string,
+    description: row["description"] as string,
+    why: row["why"] as string,
+    source: row["source"] as string,
+    primary_owner: row["primary_owner"] as string,
+    supporting_slices: row["supporting_slices"] as string,
+    validation: row["validation"] as string,
+    notes: row["notes"] as string,
+    full_content: row["full_content"] as string,
+    superseded_by: (row["superseded_by"] as string) ?? null,
+  };
+}
+
+export function getActiveRequirements(): Requirement[] {
+  if (_storageBackend) return _storageBackend.getActiveRequirements();
+  if (!currentDb) return [];
+  const rows = currentDb.prepare("SELECT * FROM active_requirements").all();
+  return rows.map((row) => ({
+    id: row["id"] as string,
+    class: row["class"] as string,
+    status: row["status"] as string,
+    description: row["description"] as string,
+    why: row["why"] as string,
+    source: row["source"] as string,
+    primary_owner: row["primary_owner"] as string,
+    supporting_slices: row["supporting_slices"] as string,
+    validation: row["validation"] as string,
+    notes: row["notes"] as string,
+    full_content: row["full_content"] as string,
+    superseded_by: null,
+  }));
+}
+
+// ── Delegated Milestone Operations ───────────────────────────────────────
+
+export function insertMilestone(m: {
+  id: string;
+  title?: string;
+  status?: string;
+  depends_on?: string[];
+  planning?: Partial<MilestonePlanningRecord>;
+}): void {
+  if (_storageBackend) { _storageBackend.insertMilestone(m as Parameters<StorageBackend["insertMilestone"]>[0]); return; }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  currentDb.prepare(
+    `INSERT OR IGNORE INTO milestones (
+      id, title, status, depends_on, created_at,
+      vision, success_criteria, key_risks, proof_strategy,
+      verification_contract, verification_integration, verification_operational, verification_uat,
+      definition_of_done, requirement_coverage, boundary_map_markdown
+    ) VALUES (
+      :id, :title, :status, :depends_on, :created_at,
+      :vision, :success_criteria, :key_risks, :proof_strategy,
+      :verification_contract, :verification_integration, :verification_operational, :verification_uat,
+      :definition_of_done, :requirement_coverage, :boundary_map_markdown
+    )`,
+  ).run({
+    ":id": m.id,
+    ":title": m.title ?? "",
+    ":status": m.status ?? "queued",
+    ":depends_on": JSON.stringify(m.depends_on ?? []),
+    ":created_at": new Date().toISOString(),
+    ":vision": m.planning?.vision ?? "",
+    ":success_criteria": JSON.stringify(m.planning?.successCriteria ?? []),
+    ":key_risks": JSON.stringify(m.planning?.keyRisks ?? []),
+    ":proof_strategy": JSON.stringify(m.planning?.proofStrategy ?? []),
+    ":verification_contract": m.planning?.verificationContract ?? "",
+    ":verification_integration": m.planning?.verificationIntegration ?? "",
+    ":verification_operational": m.planning?.verificationOperational ?? "",
+    ":verification_uat": m.planning?.verificationUat ?? "",
+    ":definition_of_done": JSON.stringify(m.planning?.definitionOfDone ?? []),
+    ":requirement_coverage": m.planning?.requirementCoverage ?? "",
+    ":boundary_map_markdown": m.planning?.boundaryMapMarkdown ?? "",
+  });
+}
+
+export function upsertMilestonePlanning(milestoneId: string, planning: Partial<MilestonePlanningRecord> & { title?: string; status?: string }): void {
+  if (_storageBackend) { _storageBackend.upsertMilestonePlanning(milestoneId, planning); return; }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  currentDb.prepare(
+    `UPDATE milestones SET
+      title = COALESCE(NULLIF(:title, ''), title),
+      status = COALESCE(NULLIF(:status, ''), status),
+      vision = COALESCE(:vision, vision),
+      success_criteria = COALESCE(:success_criteria, success_criteria),
+      key_risks = COALESCE(:key_risks, key_risks),
+      proof_strategy = COALESCE(:proof_strategy, proof_strategy),
+      verification_contract = COALESCE(:verification_contract, verification_contract),
+      verification_integration = COALESCE(:verification_integration, verification_integration),
+      verification_operational = COALESCE(:verification_operational, verification_operational),
+      verification_uat = COALESCE(:verification_uat, verification_uat),
+      definition_of_done = COALESCE(:definition_of_done, definition_of_done),
+      requirement_coverage = COALESCE(:requirement_coverage, requirement_coverage),
+      boundary_map_markdown = COALESCE(:boundary_map_markdown, boundary_map_markdown)
+     WHERE id = :id`,
+  ).run({
+    ":id": milestoneId,
+    ":title": planning.title ?? "",
+    ":status": planning.status ?? "",
+    ":vision": planning.vision ?? null,
+    ":success_criteria": planning.successCriteria ? JSON.stringify(planning.successCriteria) : null,
+    ":key_risks": planning.keyRisks ? JSON.stringify(planning.keyRisks) : null,
+    ":proof_strategy": planning.proofStrategy ? JSON.stringify(planning.proofStrategy) : null,
+    ":verification_contract": planning.verificationContract ?? null,
+    ":verification_integration": planning.verificationIntegration ?? null,
+    ":verification_operational": planning.verificationOperational ?? null,
+    ":verification_uat": planning.verificationUat ?? null,
+    ":definition_of_done": planning.definitionOfDone ? JSON.stringify(planning.definitionOfDone) : null,
+    ":requirement_coverage": planning.requirementCoverage ?? null,
+    ":boundary_map_markdown": planning.boundaryMapMarkdown ?? null,
+  });
+}
+
+export function getAllMilestones(): MilestoneRow[] {
+  if (_storageBackend) return _storageBackend.getAllMilestones();
+  if (!currentDb) return [];
+  const rows = currentDb.prepare("SELECT * FROM milestones ORDER BY id").all();
+  return rows.map(rowToMilestone);
+}
+
+export function getMilestone(id: string): MilestoneRow | null {
+  if (_storageBackend) return _storageBackend.getMilestone(id);
+  if (!currentDb) return null;
+  const row = currentDb.prepare("SELECT * FROM milestones WHERE id = :id").get({ ":id": id });
+  if (!row) return null;
+  return rowToMilestone(row);
+}
+
+export function updateMilestoneStatus(milestoneId: string, status: string, completedAt?: string | null): void {
+  if (_storageBackend) { _storageBackend.updateMilestoneStatus(milestoneId, status, completedAt ?? undefined); return; }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  currentDb.prepare(
+    `UPDATE milestones SET status = :status, completed_at = :completed_at WHERE id = :id`,
+  ).run({ ":status": status, ":completed_at": completedAt ?? null, ":id": milestoneId });
+}
+
+export function getActiveMilestoneFromDb(): MilestoneRow | null {
+  if (_storageBackend) return _storageBackend.getActiveMilestone();
+  if (!currentDb) return null;
+  const row = currentDb.prepare(
+    "SELECT * FROM milestones WHERE status NOT IN ('complete', 'parked') ORDER BY id LIMIT 1",
+  ).get();
+  if (!row) return null;
+  return rowToMilestone(row);
+}
+
+export function deleteMilestone(milestoneId: string): void {
+  if (_storageBackend) { _storageBackend.deleteMilestone(milestoneId); return; }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  transaction(() => {
+    currentDb!.prepare(
+      `DELETE FROM verification_evidence WHERE milestone_id = :mid`,
+    ).run({ ":mid": milestoneId });
+    currentDb!.prepare(
+      `DELETE FROM quality_gates WHERE milestone_id = :mid`,
+    ).run({ ":mid": milestoneId });
+    currentDb!.prepare(
+      `DELETE FROM tasks WHERE milestone_id = :mid`,
+    ).run({ ":mid": milestoneId });
+    currentDb!.prepare(
+      `DELETE FROM slice_dependencies WHERE milestone_id = :mid`,
+    ).run({ ":mid": milestoneId });
+    currentDb!.prepare(
+      `DELETE FROM slices WHERE milestone_id = :mid`,
+    ).run({ ":mid": milestoneId });
+    currentDb!.prepare(
+      `DELETE FROM replan_history WHERE milestone_id = :mid`,
+    ).run({ ":mid": milestoneId });
+    currentDb!.prepare(
+      `DELETE FROM assessments WHERE milestone_id = :mid`,
+    ).run({ ":mid": milestoneId });
+    currentDb!.prepare(
+      `DELETE FROM artifacts WHERE milestone_id = :mid`,
+    ).run({ ":mid": milestoneId });
+    currentDb!.prepare(
+      `DELETE FROM milestones WHERE id = :mid`,
+    ).run({ ":mid": milestoneId });
+  });
+}
+
+// ── Delegated Slice Operations ───────────────────────────────────────────
+
+export function insertSlice(s: {
+  id: string;
+  milestoneId: string;
+  title?: string;
+  status?: string;
+  risk?: string;
+  depends?: string[];
+  demo?: string;
+  sequence?: number;
+  planning?: Partial<SlicePlanningRecord>;
+}): void {
+  if (_storageBackend) {
+    _storageBackend.insertSlice({
+      id: s.id,
+      milestone_id: s.milestoneId,
+      title: s.title ?? "",
+      status: s.status,
+      risk: s.risk,
+      depends: s.depends,
+      demo: s.demo,
+      sequence: s.sequence,
+      goal: s.planning?.goal,
+      success_criteria: s.planning?.successCriteria,
+      proof_level: s.planning?.proofLevel,
+      integration_closure: s.planning?.integrationClosure,
+      observability_impact: s.planning?.observabilityImpact,
+    } as Parameters<StorageBackend["insertSlice"]>[0]);
+    return;
+  }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  currentDb.prepare(
+    `INSERT INTO slices (
+      milestone_id, id, title, status, risk, depends, demo, created_at,
+      goal, success_criteria, proof_level, integration_closure, observability_impact, sequence
+    ) VALUES (
+      :milestone_id, :id, :title, :status, :risk, :depends, :demo, :created_at,
+      :goal, :success_criteria, :proof_level, :integration_closure, :observability_impact, :sequence
+    )
+    ON CONFLICT (milestone_id, id) DO UPDATE SET
+      title = CASE WHEN :raw_title IS NOT NULL THEN excluded.title ELSE slices.title END,
+      status = CASE WHEN slices.status IN ('complete', 'done') THEN slices.status ELSE excluded.status END,
+      risk = CASE WHEN :raw_risk IS NOT NULL THEN excluded.risk ELSE slices.risk END,
+      depends = excluded.depends,
+      demo = CASE WHEN :raw_demo IS NOT NULL THEN excluded.demo ELSE slices.demo END,
+      goal = CASE WHEN :raw_goal IS NOT NULL THEN excluded.goal ELSE slices.goal END,
+      success_criteria = CASE WHEN :raw_success_criteria IS NOT NULL THEN excluded.success_criteria ELSE slices.success_criteria END,
+      proof_level = CASE WHEN :raw_proof_level IS NOT NULL THEN excluded.proof_level ELSE slices.proof_level END,
+      integration_closure = CASE WHEN :raw_integration_closure IS NOT NULL THEN excluded.integration_closure ELSE slices.integration_closure END,
+      observability_impact = CASE WHEN :raw_observability_impact IS NOT NULL THEN excluded.observability_impact ELSE slices.observability_impact END,
+      sequence = CASE WHEN :raw_sequence IS NOT NULL THEN excluded.sequence ELSE slices.sequence END`,
+  ).run({
+    ":milestone_id": s.milestoneId,
+    ":id": s.id,
+    ":title": s.title ?? "",
+    ":status": s.status ?? "pending",
+    ":risk": s.risk ?? "medium",
+    ":depends": JSON.stringify(s.depends ?? []),
+    ":demo": s.demo ?? "",
+    ":created_at": new Date().toISOString(),
+    ":goal": s.planning?.goal ?? "",
+    ":success_criteria": s.planning?.successCriteria ?? "",
+    ":proof_level": s.planning?.proofLevel ?? "",
+    ":integration_closure": s.planning?.integrationClosure ?? "",
+    ":observability_impact": s.planning?.observabilityImpact ?? "",
+    ":sequence": s.sequence ?? 0,
+    ":raw_title": s.title ?? null,
+    ":raw_risk": s.risk ?? null,
+    ":raw_demo": s.demo ?? null,
+    ":raw_goal": s.planning?.goal ?? null,
+    ":raw_success_criteria": s.planning?.successCriteria ?? null,
+    ":raw_proof_level": s.planning?.proofLevel ?? null,
+    ":raw_integration_closure": s.planning?.integrationClosure ?? null,
+    ":raw_observability_impact": s.planning?.observabilityImpact ?? null,
+    ":raw_sequence": s.sequence ?? null,
+  });
+}
+
+export function upsertSlicePlanning(milestoneId: string, sliceId: string, planning: Partial<SlicePlanningRecord>): void {
+  if (_storageBackend) { _storageBackend.upsertSlicePlanning(milestoneId, sliceId, planning); return; }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  currentDb.prepare(
+    `UPDATE slices SET
+      goal = COALESCE(:goal, goal),
+      success_criteria = COALESCE(:success_criteria, success_criteria),
+      proof_level = COALESCE(:proof_level, proof_level),
+      integration_closure = COALESCE(:integration_closure, integration_closure),
+      observability_impact = COALESCE(:observability_impact, observability_impact)
+     WHERE milestone_id = :milestone_id AND id = :id`,
+  ).run({
+    ":milestone_id": milestoneId,
+    ":id": sliceId,
+    ":goal": planning.goal ?? null,
+    ":success_criteria": planning.successCriteria ?? null,
+    ":proof_level": planning.proofLevel ?? null,
+    ":integration_closure": planning.integrationClosure ?? null,
+    ":observability_impact": planning.observabilityImpact ?? null,
+  });
+}
+
+export function getSlice(milestoneId: string, sliceId: string): SliceRow | null {
+  if (_storageBackend) return _storageBackend.getSlice(milestoneId, sliceId);
+  if (!currentDb) return null;
+  const row = currentDb.prepare("SELECT * FROM slices WHERE milestone_id = :mid AND id = :sid").get({ ":mid": milestoneId, ":sid": sliceId });
+  if (!row) return null;
+  return rowToSlice(row);
+}
+
+export function updateSliceStatus(milestoneId: string, sliceId: string, status: string, completedAt?: string): void {
+  if (_storageBackend) { _storageBackend.updateSliceStatus(milestoneId, sliceId, status, completedAt); return; }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  currentDb.prepare(
+    `UPDATE slices SET status = :status, completed_at = :completed_at
+     WHERE milestone_id = :milestone_id AND id = :id`,
+  ).run({
+    ":status": status,
+    ":completed_at": completedAt ?? null,
+    ":milestone_id": milestoneId,
+    ":id": sliceId,
+  });
+}
+
+export function setSliceSummaryMd(milestoneId: string, sliceId: string, summaryMd: string, uatMd: string): void {
+  if (_storageBackend) { _storageBackend.setSliceSummaryMd(milestoneId, sliceId, summaryMd, uatMd); return; }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  currentDb.prepare(
+    `UPDATE slices SET full_summary_md = :summary_md, full_uat_md = :uat_md WHERE milestone_id = :mid AND id = :sid`,
+  ).run({ ":mid": milestoneId, ":sid": sliceId, ":summary_md": summaryMd, ":uat_md": uatMd });
+}
+
+export function getMilestoneSlices(milestoneId: string): SliceRow[] {
+  if (_storageBackend) return _storageBackend.getMilestoneSlices(milestoneId);
+  if (!currentDb) return [];
+  const rows = currentDb.prepare("SELECT * FROM slices WHERE milestone_id = :mid ORDER BY sequence, id").all({ ":mid": milestoneId });
+  return rows.map(rowToSlice);
+}
+
+export function getActiveSliceFromDb(milestoneId: string): SliceRow | null {
+  if (_storageBackend) return _storageBackend.getActiveSlice(milestoneId);
+  if (!currentDb) return null;
+  const row = currentDb.prepare(
+    `SELECT s.* FROM slices s
+     WHERE s.milestone_id = :mid
+       AND s.status NOT IN ('complete', 'done', 'skipped')
+       AND NOT EXISTS (
+         SELECT 1 FROM json_each(s.depends) AS dep
+         WHERE dep.value NOT IN (
+           SELECT id FROM slices WHERE milestone_id = :mid AND status IN ('complete', 'done', 'skipped')
+         )
+       )
+     ORDER BY s.sequence, s.id
+     LIMIT 1`,
+  ).get({ ":mid": milestoneId });
+  if (!row) return null;
+  return rowToSlice(row);
+}
+
+export function getSliceStatusSummary(milestoneId: string): Array<{ id: string; status: string }> {
+  if (_storageBackend) return _storageBackend.getSliceStatusSummary(milestoneId);
+  if (!currentDb) return [];
+  return currentDb.prepare(
+    "SELECT id, status FROM slices WHERE milestone_id = :mid ORDER BY sequence, id",
+  ).all({ ":mid": milestoneId }).map((r) => ({ id: r["id"] as string, status: r["status"] as string }));
+}
+
+export function getSliceTaskCounts(milestoneId: string, sliceId: string): { total: number; done: number; pending: number } {
+  if (_storageBackend) return _storageBackend.getSliceTaskCounts(milestoneId, sliceId);
+  if (!currentDb) return { total: 0, done: 0, pending: 0 };
+  const row = currentDb.prepare(
+    `SELECT
+       COUNT(*) as total,
+       SUM(CASE WHEN status IN ('complete', 'done') THEN 1 ELSE 0 END) as done,
+       SUM(CASE WHEN status NOT IN ('complete', 'done') THEN 1 ELSE 0 END) as pending
+     FROM tasks WHERE milestone_id = :mid AND slice_id = :sid`,
+  ).get({ ":mid": milestoneId, ":sid": sliceId });
+  if (!row) return { total: 0, done: 0, pending: 0 };
+  return { total: (row["total"] as number) ?? 0, done: (row["done"] as number) ?? 0, pending: (row["pending"] as number) ?? 0 };
+}
+
+export function syncSliceDependencies(milestoneId: string, sliceId: string, depends: string[]): void {
+  if (_storageBackend) { _storageBackend.syncSliceDependencies(milestoneId, sliceId, depends); return; }
+  if (!currentDb) return;
+  currentDb.prepare(
+    "DELETE FROM slice_dependencies WHERE milestone_id = :mid AND slice_id = :sid",
+  ).run({ ":mid": milestoneId, ":sid": sliceId });
+  for (const dep of depends) {
+    currentDb.prepare(
+      "INSERT OR IGNORE INTO slice_dependencies (milestone_id, slice_id, depends_on_slice_id) VALUES (:mid, :sid, :dep)",
+    ).run({ ":mid": milestoneId, ":sid": sliceId, ":dep": dep });
+  }
+}
+
+export function getDependentSlices(milestoneId: string, sliceId: string): string[] {
+  if (_storageBackend) return _storageBackend.getDependentSlices(milestoneId, sliceId);
+  if (!currentDb) return [];
+  return currentDb.prepare(
+    "SELECT slice_id FROM slice_dependencies WHERE milestone_id = :mid AND depends_on_slice_id = :sid",
+  ).all({ ":mid": milestoneId, ":sid": sliceId }).map((r) => r["slice_id"] as string);
+}
+
+export function updateSliceFields(milestoneId: string, sliceId: string, fields: {
+  title?: string;
+  risk?: string;
+  depends?: string[];
+  demo?: string;
+}): void {
+  if (_storageBackend) { _storageBackend.updateSliceFields(milestoneId, sliceId, fields); return; }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  currentDb.prepare(
+    `UPDATE slices SET
+      title = COALESCE(:title, title),
+      risk = COALESCE(:risk, risk),
+      depends = COALESCE(:depends, depends),
+      demo = COALESCE(:demo, demo)
+     WHERE milestone_id = :milestone_id AND id = :id`,
+  ).run({
+    ":milestone_id": milestoneId,
+    ":id": sliceId,
+    ":title": fields.title ?? null,
+    ":risk": fields.risk ?? null,
+    ":depends": fields.depends ? JSON.stringify(fields.depends) : null,
+    ":demo": fields.demo ?? null,
+  });
+}
+
+export function deleteSlice(milestoneId: string, sliceId: string): void {
+  if (_storageBackend) { _storageBackend.deleteSlice(milestoneId, sliceId); return; }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  transaction(() => {
+    currentDb!.prepare(
+      `DELETE FROM verification_evidence WHERE milestone_id = :mid AND slice_id = :sid`,
+    ).run({ ":mid": milestoneId, ":sid": sliceId });
+    currentDb!.prepare(
+      `DELETE FROM tasks WHERE milestone_id = :mid AND slice_id = :sid`,
+    ).run({ ":mid": milestoneId, ":sid": sliceId });
+    currentDb!.prepare(
+      `DELETE FROM slice_dependencies WHERE milestone_id = :mid AND slice_id = :sid`,
+    ).run({ ":mid": milestoneId, ":sid": sliceId });
+    currentDb!.prepare(
+      `DELETE FROM slice_dependencies WHERE milestone_id = :mid AND depends_on_slice_id = :sid`,
+    ).run({ ":mid": milestoneId, ":sid": sliceId });
+    currentDb!.prepare(
+      `DELETE FROM slices WHERE milestone_id = :mid AND id = :sid`,
+    ).run({ ":mid": milestoneId, ":sid": sliceId });
+  });
+}
+
+// ── Delegated Task Operations ────────────────────────────────────────────
+
+export function insertTask(t: {
+  id: string;
+  sliceId: string;
+  milestoneId: string;
+  title?: string;
+  status?: string;
+  oneLiner?: string;
+  narrative?: string;
+  verificationResult?: string;
+  duration?: string;
+  blockerDiscovered?: boolean;
+  deviations?: string;
+  knownIssues?: string;
+  keyFiles?: string[];
+  keyDecisions?: string[];
+  fullSummaryMd?: string;
+  sequence?: number;
+  planning?: Partial<TaskPlanningRecord>;
+}): void {
+  if (_storageBackend) {
+    _storageBackend.insertTask({
+      id: t.id,
+      milestone_id: t.milestoneId,
+      slice_id: t.sliceId,
+      title: t.title ?? "",
+      status: t.status,
+      one_liner: t.oneLiner,
+      narrative: t.narrative,
+      verification_result: t.verificationResult,
+      duration: t.duration,
+      blocker_discovered: t.blockerDiscovered,
+      deviations: t.deviations,
+      known_issues: t.knownIssues,
+      key_files: t.keyFiles,
+      key_decisions: t.keyDecisions,
+      full_summary_md: t.fullSummaryMd,
+      sequence: t.sequence,
+      description: t.planning?.description,
+      estimate: t.planning?.estimate,
+      files: t.planning?.files,
+      verify: t.planning?.verify,
+      inputs: t.planning?.inputs,
+      expected_output: t.planning?.expectedOutput,
+      observability_impact: t.planning?.observabilityImpact,
+      full_plan_md: t.planning?.fullPlanMd,
+    } as Parameters<StorageBackend["insertTask"]>[0]);
+    return;
+  }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  currentDb.prepare(
+    `INSERT INTO tasks (
+      milestone_id, slice_id, id, title, status, one_liner, narrative,
+      verification_result, duration, completed_at, blocker_discovered,
+      deviations, known_issues, key_files, key_decisions, full_summary_md,
+      description, estimate, files, verify, inputs, expected_output, observability_impact, sequence
+    ) VALUES (
+      :milestone_id, :slice_id, :id, :title, :status, :one_liner, :narrative,
+      :verification_result, :duration, :completed_at, :blocker_discovered,
+      :deviations, :known_issues, :key_files, :key_decisions, :full_summary_md,
+      :description, :estimate, :files, :verify, :inputs, :expected_output, :observability_impact, :sequence
+    )
+    ON CONFLICT(milestone_id, slice_id, id) DO UPDATE SET
+      title = CASE WHEN NULLIF(:title, '') IS NOT NULL THEN :title ELSE tasks.title END,
+      status = :status,
+      one_liner = :one_liner,
+      narrative = :narrative,
+      verification_result = :verification_result,
+      duration = :duration,
+      completed_at = :completed_at,
+      blocker_discovered = :blocker_discovered,
+      deviations = :deviations,
+      known_issues = :known_issues,
+      key_files = :key_files,
+      key_decisions = :key_decisions,
+      full_summary_md = :full_summary_md,
+      description = CASE WHEN NULLIF(:description, '') IS NOT NULL THEN :description ELSE tasks.description END,
+      estimate = CASE WHEN NULLIF(:estimate, '') IS NOT NULL THEN :estimate ELSE tasks.estimate END,
+      files = CASE WHEN NULLIF(:files, '[]') IS NOT NULL THEN :files ELSE tasks.files END,
+      verify = CASE WHEN NULLIF(:verify, '') IS NOT NULL THEN :verify ELSE tasks.verify END,
+      inputs = CASE WHEN NULLIF(:inputs, '[]') IS NOT NULL THEN :inputs ELSE tasks.inputs END,
+      expected_output = CASE WHEN NULLIF(:expected_output, '[]') IS NOT NULL THEN :expected_output ELSE tasks.expected_output END,
+      observability_impact = CASE WHEN NULLIF(:observability_impact, '') IS NOT NULL THEN :observability_impact ELSE tasks.observability_impact END,
+      sequence = :sequence`,
+  ).run({
+    ":milestone_id": t.milestoneId,
+    ":slice_id": t.sliceId,
+    ":id": t.id,
+    ":title": t.title ?? "",
+    ":status": t.status ?? "pending",
+    ":one_liner": t.oneLiner ?? "",
+    ":narrative": t.narrative ?? "",
+    ":verification_result": t.verificationResult ?? "",
+    ":duration": t.duration ?? "",
+    ":completed_at": t.status === "done" || t.status === "complete" ? new Date().toISOString() : null,
+    ":blocker_discovered": t.blockerDiscovered ? 1 : 0,
+    ":deviations": t.deviations ?? "",
+    ":known_issues": t.knownIssues ?? "",
+    ":key_files": JSON.stringify(t.keyFiles ?? []),
+    ":key_decisions": JSON.stringify(t.keyDecisions ?? []),
+    ":full_summary_md": t.fullSummaryMd ?? "",
+    ":description": t.planning?.description ?? "",
+    ":estimate": t.planning?.estimate ?? "",
+    ":files": JSON.stringify(t.planning?.files ?? []),
+    ":verify": t.planning?.verify ?? "",
+    ":inputs": JSON.stringify(t.planning?.inputs ?? []),
+    ":expected_output": JSON.stringify(t.planning?.expectedOutput ?? []),
+    ":observability_impact": t.planning?.observabilityImpact ?? "",
+    ":sequence": t.sequence ?? 0,
+  });
+}
+
+export function upsertTaskPlanning(milestoneId: string, sliceId: string, taskId: string, planning: Partial<TaskPlanningRecord>): void {
+  if (_storageBackend) { _storageBackend.upsertTaskPlanning(milestoneId, sliceId, taskId, planning); return; }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  currentDb.prepare(
+    `UPDATE tasks SET
+      title = COALESCE(:title, title),
+      description = COALESCE(:description, description),
+      estimate = COALESCE(:estimate, estimate),
+      files = COALESCE(:files, files),
+      verify = COALESCE(:verify, verify),
+      inputs = COALESCE(:inputs, inputs),
+      expected_output = COALESCE(:expected_output, expected_output),
+      observability_impact = COALESCE(:observability_impact, observability_impact),
+      full_plan_md = COALESCE(:full_plan_md, full_plan_md)
+     WHERE milestone_id = :milestone_id AND slice_id = :slice_id AND id = :id`,
+  ).run({
+    ":milestone_id": milestoneId,
+    ":slice_id": sliceId,
+    ":id": taskId,
+    ":title": planning.title ?? null,
+    ":description": planning.description ?? null,
+    ":estimate": planning.estimate ?? null,
+    ":files": planning.files ? JSON.stringify(planning.files) : null,
+    ":verify": planning.verify ?? null,
+    ":inputs": planning.inputs ? JSON.stringify(planning.inputs) : null,
+    ":expected_output": planning.expectedOutput ? JSON.stringify(planning.expectedOutput) : null,
+    ":observability_impact": planning.observabilityImpact ?? null,
+    ":full_plan_md": planning.fullPlanMd ?? null,
+  });
+}
+
+export function getTask(milestoneId: string, sliceId: string, taskId: string): TaskRow | null {
+  if (_storageBackend) return _storageBackend.getTask(milestoneId, sliceId, taskId);
+  if (!currentDb) return null;
+  const row = currentDb.prepare(
+    "SELECT * FROM tasks WHERE milestone_id = :mid AND slice_id = :sid AND id = :tid",
+  ).get({ ":mid": milestoneId, ":sid": sliceId, ":tid": taskId });
+  if (!row) return null;
+  return rowToTask(row);
+}
+
+export function getSliceTasks(milestoneId: string, sliceId: string): TaskRow[] {
+  if (_storageBackend) return _storageBackend.getSliceTasks(milestoneId, sliceId);
+  if (!currentDb) return [];
+  const rows = currentDb.prepare(
+    "SELECT * FROM tasks WHERE milestone_id = :mid AND slice_id = :sid ORDER BY sequence, id",
+  ).all({ ":mid": milestoneId, ":sid": sliceId });
+  return rows.map(rowToTask);
+}
+
+export function getActiveTaskFromDb(milestoneId: string, sliceId: string): TaskRow | null {
+  if (_storageBackend) return _storageBackend.getActiveTask(milestoneId, sliceId);
+  if (!currentDb) return null;
+  const row = currentDb.prepare(
+    "SELECT * FROM tasks WHERE milestone_id = :mid AND slice_id = :sid AND status NOT IN ('complete', 'done') ORDER BY sequence, id LIMIT 1",
+  ).get({ ":mid": milestoneId, ":sid": sliceId });
+  if (!row) return null;
+  return rowToTask(row);
+}
+
+export function getActiveTaskIdFromDb(milestoneId: string, sliceId: string): { id: string; status: string; title: string } | null {
+  if (_storageBackend) return _storageBackend.getActiveTaskId(milestoneId, sliceId);
+  if (!currentDb) return null;
+  const row = currentDb.prepare(
+    "SELECT id, status, title FROM tasks WHERE milestone_id = :mid AND slice_id = :sid AND status NOT IN ('complete', 'done') ORDER BY sequence, id LIMIT 1",
+  ).get({ ":mid": milestoneId, ":sid": sliceId });
+  if (!row) return null;
+  return { id: row["id"] as string, status: row["status"] as string, title: row["title"] as string };
+}
+
+export function updateTaskStatus(milestoneId: string, sliceId: string, taskId: string, status: string, completedAt?: string): void {
+  if (_storageBackend) { _storageBackend.updateTaskStatus(milestoneId, sliceId, taskId, status, completedAt); return; }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  currentDb.prepare(
+    `UPDATE tasks SET status = :status, completed_at = :completed_at
+     WHERE milestone_id = :milestone_id AND slice_id = :slice_id AND id = :id`,
+  ).run({
+    ":status": status,
+    ":completed_at": completedAt ?? null,
+    ":milestone_id": milestoneId,
+    ":slice_id": sliceId,
+    ":id": taskId,
+  });
+}
+
+export function setTaskBlockerDiscovered(milestoneId: string, sliceId: string, taskId: string, discovered: boolean): void {
+  if (_storageBackend) { _storageBackend.setTaskBlockerDiscovered(milestoneId, sliceId, taskId, discovered); return; }
+  if (!currentDb) return;
+  currentDb.prepare(
+    `UPDATE tasks SET blocker_discovered = :discovered WHERE milestone_id = :mid AND slice_id = :sid AND id = :tid`,
+  ).run({ ":discovered": discovered ? 1 : 0, ":mid": milestoneId, ":sid": sliceId, ":tid": taskId });
+}
+
+export function setTaskSummaryMd(milestoneId: string, sliceId: string, taskId: string, md: string): void {
+  if (_storageBackend) { _storageBackend.setTaskSummaryMd(milestoneId, sliceId, taskId, md); return; }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  currentDb.prepare(
+    `UPDATE tasks SET full_summary_md = :md WHERE milestone_id = :mid AND slice_id = :sid AND id = :tid`,
+  ).run({ ":mid": milestoneId, ":sid": sliceId, ":tid": taskId, ":md": md });
+}
+
+export function deleteTask(milestoneId: string, sliceId: string, taskId: string): void {
+  if (_storageBackend) { _storageBackend.deleteTask(milestoneId, sliceId, taskId); return; }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  transaction(() => {
+    currentDb!.prepare(
+      `DELETE FROM verification_evidence WHERE milestone_id = :mid AND slice_id = :sid AND task_id = :tid`,
+    ).run({ ":mid": milestoneId, ":sid": sliceId, ":tid": taskId });
+    currentDb!.prepare(
+      `DELETE FROM tasks WHERE milestone_id = :mid AND slice_id = :sid AND id = :tid`,
+    ).run({ ":mid": milestoneId, ":sid": sliceId, ":tid": taskId });
+  });
+}
+
+// ── Delegated Artifact Operations ────────────────────────────────────────
+
+export function clearArtifacts(): void {
+  if (_storageBackend) { _storageBackend.clearArtifacts(); return; }
+  if (!currentDb) return;
+  try { currentDb.exec("DELETE FROM artifacts"); } catch (e) { logWarning("db", `clearArtifacts failed: ${(e as Error).message}`); }
+}
+
+export function insertArtifact(a: {
+  path: string;
+  artifact_type: string;
+  milestone_id: string | null;
+  slice_id: string | null;
+  task_id: string | null;
+  full_content: string;
+}): void {
+  if (_storageBackend) { _storageBackend.insertArtifact({ ...a, type: a.artifact_type, created_at: a.imported_at }); return; }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  currentDb.prepare(
+    `INSERT OR REPLACE INTO artifacts (path, artifact_type, milestone_id, slice_id, task_id, full_content, imported_at)
+     VALUES (:path, :artifact_type, :milestone_id, :slice_id, :task_id, :full_content, :imported_at)`,
+  ).run({
+    ":path": a.path,
+    ":artifact_type": a.artifact_type,
+    ":milestone_id": a.milestone_id,
+    ":slice_id": a.slice_id,
+    ":task_id": a.task_id,
+    ":full_content": a.full_content,
+    ":imported_at": new Date().toISOString(),
+  });
+}
+
+export function getArtifact(path: string): ArtifactRow | null {
+  if (_storageBackend) return _storageBackend.getArtifact(path);
+  if (!currentDb) return null;
+  const row = currentDb.prepare("SELECT * FROM artifacts WHERE path = :path").get({ ":path": path });
+  if (!row) return null;
+  return rowToArtifact(row);
+}
+
+// ── Delegated Verification Evidence Operations ───────────────────────────
+
+export function insertVerificationEvidence(e: {
+  taskId: string;
+  sliceId: string;
+  milestoneId: string;
+  command: string;
+  exitCode: number;
+  verdict: string;
+  durationMs: number;
+}): void {
+  if (_storageBackend) {
+    _storageBackend.insertVerificationEvidence({
+      milestone_id: e.milestoneId,
+      slice_id: e.sliceId,
+      task_id: e.taskId,
+      command: e.command,
+      exit_code: e.exitCode,
+      verdict: e.verdict,
+      duration_ms: e.durationMs,
+    });
+    return;
+  }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  currentDb.prepare(
+    `INSERT OR IGNORE INTO verification_evidence (task_id, slice_id, milestone_id, command, exit_code, verdict, duration_ms, created_at)
+     VALUES (:task_id, :slice_id, :milestone_id, :command, :exit_code, :verdict, :duration_ms, :created_at)`,
+  ).run({
+    ":task_id": e.taskId,
+    ":slice_id": e.sliceId,
+    ":milestone_id": e.milestoneId,
+    ":command": e.command,
+    ":exit_code": e.exitCode,
+    ":verdict": e.verdict,
+    ":duration_ms": e.durationMs,
+    ":created_at": new Date().toISOString(),
+  });
+}
+
+export function getVerificationEvidence(milestoneId: string, sliceId: string, taskId: string): VerificationEvidenceRow[] {
+  if (_storageBackend) return _storageBackend.getVerificationEvidence(milestoneId, sliceId, taskId);
+  if (!currentDb) return [];
+  const rows = currentDb.prepare(
+    "SELECT * FROM verification_evidence WHERE milestone_id = :mid AND slice_id = :sid AND task_id = :tid ORDER BY id",
+  ).all({ ":mid": milestoneId, ":sid": sliceId, ":tid": taskId });
+  return rows as unknown as VerificationEvidenceRow[];
+}
+
+export function deleteVerificationEvidence(milestoneId: string, sliceId: string, taskId: string): void {
+  if (_storageBackend) { _storageBackend.deleteVerificationEvidence(milestoneId, sliceId, taskId); return; }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  currentDb.prepare(
+    `DELETE FROM verification_evidence WHERE milestone_id = :mid AND slice_id = :sid AND task_id = :tid`,
+  ).run({ ":mid": milestoneId, ":sid": sliceId, ":tid": taskId });
+}
+
+// ── Delegated Replan History Operations ──────────────────────────────────
+
+export function insertReplanHistory(entry: {
+  milestoneId: string;
+  sliceId?: string | null;
+  taskId?: string | null;
+  summary: string;
+  previousArtifactPath?: string | null;
+  replacementArtifactPath?: string | null;
+}): void {
+  if (_storageBackend) {
+    _storageBackend.insertReplanHistory({
+      milestone_id: entry.milestoneId,
+      slice_id: entry.sliceId ?? null,
+      task_id: entry.taskId ?? null,
+      summary: entry.summary,
+      previous_artifact_path: entry.previousArtifactPath ?? null,
+      replacement_artifact_path: entry.replacementArtifactPath ?? null,
+    });
+    return;
+  }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  currentDb.prepare(
+    `INSERT OR REPLACE INTO replan_history (milestone_id, slice_id, task_id, summary, previous_artifact_path, replacement_artifact_path, created_at)
+     VALUES (:milestone_id, :slice_id, :task_id, :summary, :previous_artifact_path, :replacement_artifact_path, :created_at)`,
+  ).run({
+    ":milestone_id": entry.milestoneId,
+    ":slice_id": entry.sliceId ?? null,
+    ":task_id": entry.taskId ?? null,
+    ":summary": entry.summary,
+    ":previous_artifact_path": entry.previousArtifactPath ?? null,
+    ":replacement_artifact_path": entry.replacementArtifactPath ?? null,
+    ":created_at": new Date().toISOString(),
+  });
+}
+
+export function getReplanHistory(milestoneId: string, sliceId?: string): Array<Record<string, unknown>> {
+  if (_storageBackend) return _storageBackend.getReplanHistory(milestoneId, sliceId);
+  if (!currentDb) return [];
+  if (sliceId) {
+    return currentDb.prepare(
+      `SELECT * FROM replan_history WHERE milestone_id = :mid AND slice_id = :sid ORDER BY created_at DESC`,
+    ).all({ ":mid": milestoneId, ":sid": sliceId });
+  }
+  return currentDb.prepare(
+    `SELECT * FROM replan_history WHERE milestone_id = :mid ORDER BY created_at DESC`,
+  ).all({ ":mid": milestoneId });
+}
+
+// ── Delegated Assessment Operations ──────────────────────────────────────
+
+export function insertAssessment(entry: {
+  path: string;
+  milestoneId: string;
+  sliceId?: string | null;
+  taskId?: string | null;
+  status: string;
+  scope: string;
+  fullContent: string;
+}): void {
+  if (_storageBackend) {
+    _storageBackend.insertAssessment({
+      path: entry.path,
+      milestone_id: entry.milestoneId,
+      slice_id: entry.sliceId ?? null,
+      task_id: entry.taskId ?? null,
+      status: entry.status,
+      scope: entry.scope,
+      full_content: entry.fullContent,
+    });
+    return;
+  }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  currentDb.prepare(
+    `INSERT OR REPLACE INTO assessments (path, milestone_id, slice_id, task_id, status, scope, full_content, created_at)
+     VALUES (:path, :milestone_id, :slice_id, :task_id, :status, :scope, :full_content, :created_at)`,
+  ).run({
+    ":path": entry.path,
+    ":milestone_id": entry.milestoneId,
+    ":slice_id": entry.sliceId ?? null,
+    ":task_id": entry.taskId ?? null,
+    ":status": entry.status,
+    ":scope": entry.scope,
+    ":full_content": entry.fullContent,
+    ":created_at": new Date().toISOString(),
+  });
+}
+
+export function deleteAssessmentByScope(milestoneId: string, scope: string): void {
+  if (_storageBackend) { _storageBackend.deleteAssessmentByScope(milestoneId, scope); return; }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  currentDb.prepare(
+    `DELETE FROM assessments WHERE milestone_id = :mid AND scope = :scope`,
+  ).run({ ":mid": milestoneId, ":scope": scope });
+}
+
+export function getAssessment(path: string): Record<string, unknown> | null {
+  if (_storageBackend) return _storageBackend.getAssessment(path);
+  if (!currentDb) return null;
+  const row = currentDb.prepare(
+    `SELECT * FROM assessments WHERE path = :path`,
+  ).get({ ":path": path });
+  return row ?? null;
+}
+
+// ── Delegated Gate Operations ────────────────────────────────────────────
+
+export function insertGateRow(g: {
+  milestoneId: string;
+  sliceId: string;
+  gateId: GateId;
+  scope: GateScope;
+  taskId?: string | null;
+  status?: GateStatus;
+}): void {
+  if (_storageBackend) {
+    _storageBackend.insertGateRow({
+      milestone_id: g.milestoneId,
+      slice_id: g.sliceId,
+      gate_id: g.gateId,
+      scope: g.scope,
+      task_id: g.taskId ?? "",
+      status: g.status ?? "pending",
+    });
+    return;
+  }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  currentDb.prepare(
+    `INSERT OR IGNORE INTO quality_gates (milestone_id, slice_id, gate_id, scope, task_id, status)
+     VALUES (:mid, :sid, :gid, :scope, :tid, :status)`,
+  ).run({
+    ":mid": g.milestoneId,
+    ":sid": g.sliceId,
+    ":gid": g.gateId,
+    ":scope": g.scope,
+    ":tid": g.taskId ?? "",
+    ":status": g.status ?? "pending",
+  });
+}
+
+export function saveGateResult(g: {
+  milestoneId: string;
+  sliceId: string;
+  gateId: string;
+  taskId?: string | null;
+  verdict: GateVerdict;
+  rationale: string;
+  findings: string;
+}): void {
+  if (_storageBackend) {
+    _storageBackend.saveGateResult({
+      milestone_id: g.milestoneId,
+      slice_id: g.sliceId,
+      gate_id: g.gateId as GateId,
+      scope: "" as GateScope,
+      task_id: g.taskId ?? "",
+      verdict: g.verdict,
+      rationale: g.rationale,
+      findings: g.findings,
+    });
+    return;
+  }
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  currentDb.prepare(
+    `UPDATE quality_gates
+     SET status = 'complete', verdict = :verdict, rationale = :rationale,
+         findings = :findings, evaluated_at = :evaluated_at
+     WHERE milestone_id = :mid AND slice_id = :sid AND gate_id = :gid
+       AND task_id = :tid`,
+  ).run({
+    ":mid": g.milestoneId,
+    ":sid": g.sliceId,
+    ":gid": g.gateId,
+    ":tid": g.taskId ?? "",
+    ":verdict": g.verdict,
+    ":rationale": g.rationale,
+    ":findings": g.findings,
+    ":evaluated_at": new Date().toISOString(),
+  });
+}
+
+export function getPendingGates(milestoneId: string, sliceId: string, scope?: GateScope): GateRow[] {
+  if (_storageBackend) return _storageBackend.getPendingGates(milestoneId, sliceId, scope);
+  if (!currentDb) return [];
+  const sql = scope
+    ? `SELECT * FROM quality_gates WHERE milestone_id = :mid AND slice_id = :sid AND scope = :scope AND status = 'pending'`
+    : `SELECT * FROM quality_gates WHERE milestone_id = :mid AND slice_id = :sid AND status = 'pending'`;
+  const params: Record<string, unknown> = { ":mid": milestoneId, ":sid": sliceId };
+  if (scope) params[":scope"] = scope;
+  return currentDb.prepare(sql).all(params).map(rowToGate);
+}
+
+export function getGateResults(milestoneId: string, sliceId: string, scope?: GateScope): GateRow[] {
+  if (_storageBackend) return _storageBackend.getGateResults(milestoneId, sliceId, scope);
+  if (!currentDb) return [];
+  const sql = scope
+    ? `SELECT * FROM quality_gates WHERE milestone_id = :mid AND slice_id = :sid AND scope = :scope`
+    : `SELECT * FROM quality_gates WHERE milestone_id = :mid AND slice_id = :sid`;
+  const params: Record<string, unknown> = { ":mid": milestoneId, ":sid": sliceId };
+  if (scope) params[":scope"] = scope;
+  return currentDb.prepare(sql).all(params).map(rowToGate);
+}
+
+export function markAllGatesOmitted(milestoneId: string, sliceId: string): void {
+  if (_storageBackend) { _storageBackend.markAllGatesOmitted(milestoneId, sliceId); return; }
+  if (!currentDb) return;
+  currentDb.prepare(
+    `UPDATE quality_gates SET status = 'omitted', verdict = 'omitted', evaluated_at = :now
+     WHERE milestone_id = :mid AND slice_id = :sid AND status = 'pending'`,
+  ).run({
+    ":mid": milestoneId,
+    ":sid": sliceId,
+    ":now": new Date().toISOString(),
+  });
+}
+
+export function getPendingSliceGateCount(milestoneId: string, sliceId: string): number {
+  if (_storageBackend) return _storageBackend.getPendingSliceGateCount(milestoneId, sliceId);
+  if (!currentDb) return 0;
+  const row = currentDb.prepare(
+    `SELECT COUNT(*) as cnt FROM quality_gates
+     WHERE milestone_id = :mid AND slice_id = :sid AND scope = 'slice' AND status = 'pending'`,
+  ).get({ ":mid": milestoneId, ":sid": sliceId });
+  return row ? (row["cnt"] as number) : 0;
+}
+
+export function getPendingGatesForTurn(
+  milestoneId: string,
+  sliceId: string,
+  turn: OwnerTurn,
+  taskId?: string,
+): GateRow[] {
+  if (_storageBackend) return _storageBackend.getPendingGatesForTurn(milestoneId, sliceId, turn as string, taskId);
+  if (!currentDb) return [];
+  const ids = getGateIdsForTurn(turn);
+  if (ids.size === 0) return [];
+  const idList = [...ids];
+  const placeholders = idList.map((_, i) => `:gid${i}`).join(",");
+  const params: Record<string, unknown> = {
+    ":mid": milestoneId,
+    ":sid": sliceId,
+  };
+  idList.forEach((id, i) => {
+    params[`:gid${i}`] = id;
+  });
+  let sql =
+    `SELECT * FROM quality_gates
+     WHERE milestone_id = :mid AND slice_id = :sid
+       AND status = 'pending'
+       AND gate_id IN (${placeholders})`;
+  if (taskId !== undefined) {
+    sql += ` AND task_id = :tid`;
+    params[":tid"] = taskId;
+  }
+  return currentDb.prepare(sql).all(params).map(rowToGate);
+}
+
+export function getPendingGateCountForTurn(
+  milestoneId: string,
+  sliceId: string,
+  turn: OwnerTurn,
+): number {
+  if (_storageBackend) return _storageBackend.getPendingGateCountForTurn(milestoneId, sliceId, turn as string);
+  return getPendingGatesForTurn(milestoneId, sliceId, turn).length;
+}
+
+// ── Delegated Worktree Operations ────────────────────────────────────────
+
+export function copyWorktreeDb(srcDbPath: string, destDbPath: string): boolean {
+  if (_storageBackend) return _storageBackend.copyWorktreeDb(srcDbPath, destDbPath);
+  try {
+    if (!existsSync(srcDbPath)) return false;
+    mkdirSync(dirname(destDbPath), { recursive: true });
+    copyFileSync(srcDbPath, destDbPath);
+    return true;
+  } catch (err) {
+    logError("db", "failed to copy DB to worktree", { error: (err as Error).message });
+    return false;
+  }
+}
+
+export function reconcileWorktreeDb(
+  mainDbPath: string,
+  worktreeDbPath: string,
+): import("./storage-backend.js").StorageBackend extends infer SB ? SB extends { reconcileWorktreeDb: (...a: unknown[]) => infer R } ? R : { decisions: number; requirements: number; artifacts: number; milestones: number; slices: number; tasks: number; memories: number; verification_evidence: number; conflicts: unknown[] } : { decisions: number; requirements: number; artifacts: number; milestones: number; slices: number; tasks: number; memories: number; verification_evidence: number; conflicts: unknown[] } {
+  if (_storageBackend) return _storageBackend.reconcileWorktreeDb(mainDbPath, worktreeDbPath) as unknown as ReturnType<typeof reconcileWorktreeDb>;
+  const zero = { decisions: 0, requirements: 0, artifacts: 0, milestones: 0, slices: 0, tasks: 0, memories: 0, verification_evidence: 0, conflicts: [] };
+  if (!existsSync(worktreeDbPath)) return zero as ReturnType<typeof reconcileWorktreeDb>;
+  try {
+    if (realpathSync(mainDbPath) === realpathSync(worktreeDbPath)) return zero as ReturnType<typeof reconcileWorktreeDb>;
+  } catch (e) { logWarning("db", `realpathSync failed: ${(e as Error).message}`); }
+  if (/['";\x00]/.test(worktreeDbPath)) {
+    logError("db", "worktree DB reconciliation failed: path contains unsafe characters");
+    return zero as ReturnType<typeof reconcileWorktreeDb>;
+  }
+  if (!currentDb) {
+    const opened = openDatabase(mainDbPath);
+    if (!opened) {
+      logError("db", "worktree DB reconciliation failed: cannot open main DB");
+      return zero as ReturnType<typeof reconcileWorktreeDb>;
+    }
+  }
+  const adapter = currentDb!;
+  const conflicts: string[] = [];
+  try {
+    adapter.exec(`ATTACH DATABASE '${worktreeDbPath}' AS wt`);
+    try {
+      const merged = { decisions: 0, requirements: 0, artifacts: 0, milestones: 0, slices: 0, tasks: 0, memories: 0, verification_evidence: 0 };
+      function countChanges(result: unknown): number {
+        return typeof result === "object" && result !== null ? ((result as { changes?: number }).changes ?? 0) : 0;
+      }
+      adapter.exec("BEGIN");
+      try {
+        merged.decisions = countChanges(adapter.prepare(`INSERT OR REPLACE INTO decisions (id, when_context, scope, decision, choice, rationale, revisable, made_by, superseded_by) SELECT id, when_context, scope, decision, choice, rationale, revisable, 'agent', superseded_by FROM wt.decisions`).run());
+        merged.requirements = countChanges(adapter.prepare(`INSERT OR REPLACE INTO requirements (id, class, status, description, why, source, primary_owner, supporting_slices, validation, notes, full_content, superseded_by) SELECT id, class, status, description, why, source, primary_owner, supporting_slices, validation, notes, full_content, superseded_by FROM wt.requirements`).run());
+        merged.artifacts = countChanges(adapter.prepare(`INSERT OR REPLACE INTO artifacts (path, artifact_type, milestone_id, slice_id, task_id, full_content, imported_at) SELECT path, artifact_type, milestone_id, slice_id, task_id, full_content, imported_at FROM wt.artifacts`).run());
+        merged.milestones = countChanges(adapter.prepare(`INSERT OR REPLACE INTO milestones (id, title, status, depends_on, created_at, completed_at, vision, success_criteria, key_risks, proof_strategy, verification_contract, verification_integration, verification_operational, verification_uat, definition_of_done, requirement_coverage, boundary_map_markdown) SELECT id, title, status, depends_on, created_at, completed_at, vision, success_criteria, key_risks, proof_strategy, verification_contract, verification_integration, verification_operational, verification_uat, definition_of_done, requirement_coverage, boundary_map_markdown FROM wt.milestones`).run());
+        merged.slices = countChanges(adapter.prepare(`INSERT OR REPLACE INTO slices (milestone_id, id, title, status, risk, depends, demo, created_at, completed_at, full_summary_md, full_uat_md, goal, success_criteria, proof_level, integration_closure, observability_impact, sequence, replan_triggered_at) SELECT w.milestone_id, w.id, w.title, CASE WHEN m.status IN ('complete', 'done') AND w.status NOT IN ('complete', 'done') THEN m.status ELSE w.status END, w.risk, w.depends, w.demo, w.created_at, CASE WHEN m.status IN ('complete', 'done') AND w.status NOT IN ('complete', 'done') THEN m.completed_at ELSE w.completed_at END, w.full_summary_md, w.full_uat_md, w.goal, w.success_criteria, w.proof_level, w.integration_closure, w.observability_impact, w.sequence, w.replan_triggered_at FROM wt.slices w LEFT JOIN slices m ON m.milestone_id = w.milestone_id AND m.id = w.id`).run());
+        merged.tasks = countChanges(adapter.prepare(`INSERT OR REPLACE INTO tasks (milestone_id, slice_id, id, title, status, one_liner, narrative, verification_result, duration, completed_at, blocker_discovered, deviations, known_issues, key_files, key_decisions, full_summary_md, description, estimate, files, verify, inputs, expected_output, observability_impact, full_plan_md, sequence) SELECT w.milestone_id, w.slice_id, w.id, w.title, CASE WHEN m.status IN ('complete', 'done') AND w.status NOT IN ('complete', 'done') THEN m.status ELSE w.status END, w.one_liner, w.narrative, w.verification_result, w.duration, CASE WHEN m.status IN ('complete', 'done') AND w.status NOT IN ('complete', 'done') THEN m.completed_at ELSE w.completed_at END, w.blocker_discovered, w.deviations, w.known_issues, w.key_files, w.key_decisions, w.full_summary_md, w.description, w.estimate, w.files, w.verify, w.inputs, w.expected_output, w.observability_impact, w.full_plan_md, w.sequence FROM wt.tasks w LEFT JOIN tasks m ON m.milestone_id = w.milestone_id AND m.slice_id = w.slice_id AND m.id = w.id`).run());
+        merged.memories = countChanges(adapter.prepare(`INSERT OR REPLACE INTO memories (seq, id, category, content, confidence, source_unit_type, source_unit_id, created_at, updated_at, superseded_by, hit_count) SELECT seq, id, category, content, confidence, source_unit_type, source_unit_id, created_at, updated_at, superseded_by, hit_count FROM wt.memories`).run());
+        merged.verification_evidence = countChanges(adapter.prepare(`INSERT OR IGNORE INTO verification_evidence (task_id, slice_id, milestone_id, command, exit_code, verdict, duration_ms, created_at) SELECT task_id, slice_id, milestone_id, command, exit_code, verdict, duration_ms, created_at FROM wt.verification_evidence`).run());
+        adapter.exec("COMMIT");
+      } catch (txErr) {
+        try { adapter.exec("ROLLBACK"); } catch (e) { logWarning("db", `rollback failed: ${(e as Error).message}`); }
+        throw txErr;
+      }
+      return { ...merged, conflicts } as ReturnType<typeof reconcileWorktreeDb>;
+    } finally {
+      try { adapter.exec("DETACH DATABASE wt"); } catch (e) { logWarning("db", `detach worktree DB failed: ${(e as Error).message}`); }
+    }
+  } catch (err) {
+    logError("db", "worktree DB reconciliation failed", { error: (err as Error).message });
+    return { ...zero, conflicts } as ReturnType<typeof reconcileWorktreeDb>;
+  }
 }

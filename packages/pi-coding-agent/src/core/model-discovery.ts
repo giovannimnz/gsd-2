@@ -58,7 +58,9 @@ class OpenAIDiscoveryAdapter implements ProviderDiscoveryAdapter {
 	supportsDiscovery = true;
 
 	async fetchModels(apiKey: string, baseUrl?: string): Promise<DiscoveredModel[]> {
-		const url = `${baseUrl ?? "https://api.openai.com"}/v1/models`;
+		// Avoid double /v1 prefix if baseUrl already ends with /v1
+		const normalizedBase = baseUrl && baseUrl.endsWith("/v1") ? baseUrl.slice(0, -3) : (baseUrl ?? "https://api.openai.com");
+		const url = `${normalizedBase}/v1/models`;
 		const response = await fetchWithTimeout(url, {
 			headers: { Authorization: `Bearer ${apiKey}` },
 		});

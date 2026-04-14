@@ -3712,7 +3712,9 @@ export class InteractiveMode {
 			// Validate the API key by making a test request to /v1/models
 			dialog.showProgress("Validating API key...");
 
-			const testUrl = `${baseUrl}/v1/models`;
+			// Avoid double /v1 prefix if baseUrl already ends with /v1
+			const normalizedBaseUrl = baseUrl.endsWith("/v1") ? baseUrl.slice(0, -3) : baseUrl;
+			const testUrl = `${normalizedBaseUrl}/v1/models`;
 			const headers: Record<string, string> = { Authorization: `Bearer ${apiKey.trim()}` };
 			if (providerConfig && (providerConfig as any).authHeader !== false) {
 				headers["Authorization"] = `Bearer ${apiKey.trim()}`;

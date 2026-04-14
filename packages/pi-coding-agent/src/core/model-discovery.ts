@@ -67,14 +67,43 @@ class OpenAIDiscoveryAdapter implements ProviderDiscoveryAdapter {
 			throw new Error(`OpenAI models API returned ${response.status}: ${response.statusText}`);
 		}
 
-		const data = (await response.json()) as { data: Array<{ id: string; owned_by?: string }> };
+		const data = (await response.json()) as {
+			data: Array<{
+				id: string;
+				owned_by?: string;
+				name?: string;
+				context_length?: number;
+				max_output_tokens?: number;
+				top_provider?: { max_completion_tokens?: number };
+				pricing?: { prompt?: string; completion?: string; prompt_cache_hit?: string };
+				object?: string;
+			}>;
+		};
+
 		return data.data
 			.filter((m) => !OPENAI_EXCLUDED_PREFIXES.some((prefix) => m.id.startsWith(prefix)))
-			.map((m) => ({
-				id: m.id,
-				name: m.id,
-				input: ["text" as const, "image" as const],
-			}));
+			.map((m) => {
+				const cost =
+					m.pricing?.prompt !== undefined && m.pricing?.completion !== undefined
+						? {
+								input: parseFloat(m.pricing.prompt) * 1_000_000,
+								output: parseFloat(m.pricing.completion) * 1_000_000,
+								cacheRead: m.pricing.prompt_cache_hit !== undefined
+									? parseFloat(m.pricing.prompt_cache_hit) * 1_000_000
+									: 0,
+								cacheWrite: parseFloat(m.pricing.prompt) * 1_000_000,
+							}
+						: undefined;
+
+				return {
+					id: m.id,
+					name: m.name ?? m.id,
+					contextWindow: m.context_length,
+					maxTokens: m.top_provider?.max_completion_tokens ?? m.max_output_tokens,
+					cost,
+					input: ["text" as const, "image" as const],
+				};
+			});
 	}
 }
 
@@ -206,6 +235,19 @@ class StaticDiscoveryAdapter implements ProviderDiscoveryAdapter {
 
 // ─── Registry ────────────────────────────────────────────────────────────────
 
+/**
+ * Provider aliases that should use the OpenAI discovery adapter.
+ * Custom OpenAI-compatible proxies can register here to get automatic
+ * model discovery from their /v1/models endpoint.
+ */
+const OPENAI_COMPATIBLE_ALIASES = ["atius-router"];
+
+function createOpenAIAlias(name: string): ProviderDiscoveryAdapter {
+	const adapter = new OpenAIDiscoveryAdapter();
+	adapter.provider = name;
+	return adapter;
+}
+
 const adapters: Record<string, ProviderDiscoveryAdapter> = {
 	openai: new OpenAIDiscoveryAdapter(),
 	ollama: new OllamaDiscoveryAdapter(),
@@ -218,6 +260,8 @@ const adapters: Record<string, ProviderDiscoveryAdapter> = {
 	cerebras: new StaticDiscoveryAdapter("cerebras"),
 	xai: new StaticDiscoveryAdapter("xai"),
 	mistral: new StaticDiscoveryAdapter("mistral"),
+	// Custom OpenAI-compatible proxies get discovery from their /v1/models endpoint
+	...Object.fromEntries(OPENAI_COMPATIBLE_ALIASES.map((alias) => [alias, createOpenAIAlias(alias)])),
 };
 
 export function getDiscoveryAdapter(provider: string): ProviderDiscoveryAdapter {

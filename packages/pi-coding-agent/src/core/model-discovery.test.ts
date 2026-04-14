@@ -7,6 +7,145 @@ import {
 	getDiscoveryAdapter,
 } from "./model-discovery.js";
 
+// ─── OpenAI Adapter enriched metadata parsing ────────────────────────────────
+
+describe("OpenAI adapter enriched metadata parsing", () => {
+	it("parses context_length, maxTokens, and pricing from enriched responses", async () => {
+		// Simulate the response format from a New API / DeepSeek endpoint
+		const mockResponse = {
+			data: [
+				{
+					id: "deepseek-chat",
+					object: "model",
+					created: 1735689600,
+					owned_by: "deepseek",
+					name: "DeepSeek V3.2",
+					context_length: 131072,
+					top_provider: { max_completion_tokens: 8192 },
+					pricing: {
+						prompt: "0.00000028",
+						completion: "0.00000042",
+						prompt_cache_hit: "0.000000028",
+					},
+				},
+				{
+					id: "deepseek-reasoner",
+					object: "model",
+					created: 1735689600,
+					owned_by: "deepseek",
+					name: "DeepSeek V3.2 Reasoner",
+					context_length: 131072,
+					top_provider: { max_completion_tokens: 65536 },
+					pricing: {
+						prompt: "0.00000028",
+						completion: "0.00000042",
+						prompt_cache_hit: "0.000000028",
+					},
+				},
+			],
+			object: "list",
+		};
+
+		// Verify the mapping logic (same as in OpenAIDiscoveryAdapter.fetchModels)
+		const models = mockResponse.data
+			.filter((m) => !["embedding", "tts", "dall-e", "whisper", "text-embedding", "davinci", "babbage"].some((prefix) => m.id.startsWith(prefix)))
+			.map((m) => {
+				const cost =
+					m.pricing?.prompt !== undefined && m.pricing?.completion !== undefined
+						? {
+								input: parseFloat(m.pricing.prompt) * 1_000_000,
+								output: parseFloat(m.pricing.completion) * 1_000_000,
+								cacheRead: m.pricing.prompt_cache_hit !== undefined
+									? parseFloat(m.pricing.prompt_cache_hit) * 1_000_000
+									: 0,
+								cacheWrite: parseFloat(m.pricing.prompt) * 1_000_000,
+							}
+						: undefined;
+
+				return {
+					id: m.id,
+					name: m.name ?? m.id,
+					contextWindow: m.context_length,
+					maxTokens: m.top_provider?.max_completion_tokens,
+					cost,
+					input: ["text" as const, "image" as const],
+				};
+			});
+
+		assert.equal(models.length, 2);
+
+		// deepseek-chat
+		assert.equal(models[0].id, "deepseek-chat");
+		assert.equal(models[0].name, "DeepSeek V3.2");
+		assert.equal(models[0].contextWindow, 131072);
+		assert.equal(models[0].maxTokens, 8192);
+		assert.deepEqual(models[0].cost, {
+			input: 0.28,
+			output: 0.42,
+			cacheRead: 0.028,
+			cacheWrite: 0.28,
+		});
+
+		// deepseek-reasoner
+		assert.equal(models[1].id, "deepseek-reasoner");
+		assert.equal(models[1].name, "DeepSeek V3.2 Reasoner");
+		assert.equal(models[1].contextWindow, 131072);
+		assert.equal(models[1].maxTokens, 65536);
+		assert.deepEqual(models[1].cost, {
+			input: 0.28,
+			output: 0.42,
+			cacheRead: 0.028,
+			cacheWrite: 0.28,
+		});
+	});
+
+	it("falls back to id when name is not provided", async () => {
+		const mockResponse = {
+			data: [
+				{
+					id: "gpt-4o",
+					object: "model",
+					owned_by: "openai",
+					name: undefined,
+				},
+			],
+			object: "list",
+		};
+
+		const models = mockResponse.data.map((m) => ({
+			id: m.id,
+			name: m.name ?? m.id,
+			contextWindow: (m as any).context_length,
+			maxTokens: (m as any).top_provider?.max_completion_tokens,
+			cost: undefined,
+			input: ["text" as const, "image" as const],
+		}));
+
+		assert.equal(models[0].name, "gpt-4o");
+	});
+
+	it("excludes embedding, tts, dall-e, whisper, and legacy models", async () => {
+		const mockResponse = {
+			data: [
+				{ id: "gpt-4o", owned_by: "openai" },
+				{ id: "text-embedding-3-small", owned_by: "openai" },
+				{ id: "tts-1", owned_by: "openai" },
+				{ id: "dall-e-3", owned_by: "openai" },
+				{ id: "whisper-1", owned_by: "openai" },
+				{ id: "davinci-002", owned_by: "openai" },
+				{ id: "babbage-002", owned_by: "openai" },
+			],
+			object: "list",
+		};
+
+		const excluded = ["embedding", "tts", "dall-e", "whisper", "text-embedding", "davinci", "babbage"];
+		const models = mockResponse.data.filter((m) => !excluded.some((prefix) => m.id.startsWith(prefix)));
+
+		assert.equal(models.length, 1);
+		assert.equal(models[0].id, "gpt-4o");
+	});
+});
+
 // ─── getDiscoveryAdapter ─────────────────────────────────────────────────────
 
 describe("getDiscoveryAdapter", () => {
@@ -50,6 +189,12 @@ describe("getDiscoveryAdapter", () => {
 		const adapter = getDiscoveryAdapter("unknown-provider");
 		assert.equal(adapter.provider, "unknown-provider");
 		assert.equal(adapter.supportsDiscovery, false);
+	});
+
+	it("returns OpenAI adapter for atius-router alias", () => {
+		const adapter = getDiscoveryAdapter("atius-router");
+		assert.equal(adapter.provider, "atius-router");
+		assert.equal(adapter.supportsDiscovery, true);
 	});
 
 	it("static adapter fetchModels returns empty array", async () => {

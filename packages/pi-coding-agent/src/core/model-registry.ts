@@ -811,7 +811,11 @@ export class ModelRegistry {
 				const apiKey = await this.authStorage.getApiKey(providerName);
 				if (!apiKey && !this.isProviderRequestReady(providerName)) continue;
 
-				const models = await adapter.fetchModels(apiKey ?? "", undefined);
+				// Get baseUrl from registered provider config (supports custom proxies like atius-router)
+				const providerConfig = this.registeredProviders.get(providerName);
+				const baseUrl = providerConfig?.baseUrl || undefined;
+
+				const models = await adapter.fetchModels(apiKey ?? "", baseUrl);
 				this.discoveryCache.set(providerName, models);
 				results.push({
 					provider: providerName,

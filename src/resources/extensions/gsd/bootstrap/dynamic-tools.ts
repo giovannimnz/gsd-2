@@ -77,16 +77,18 @@ export function resolveProjectRootDbPath(basePath: string): string {
 
 export async function ensureDbOpen(basePath: string = process.cwd()): Promise<boolean> {
   try {
-    const db = await import("../gsd-db.js");
+    const { createStorageBackend } = await import("../storage-factory.js");
     const dbPath = resolveProjectRootDbPath(basePath);
     const gsdDir = join(basePath, ".gsd");
 
     // Derive the project root from the DB path (strip .gsd/gsd.db)
     const projectRoot = join(dbPath, "..", "..");
 
+    const backend = createStorageBackend(basePath);
+
     // Open existing DB file (may be at project root for worktrees)
     if (existsSync(dbPath)) {
-      const opened = db.openDatabase(dbPath);
+      const opened = backend.open(dbPath);
       if (opened) setLogBasePath(projectRoot);
       return opened;
     }
@@ -97,7 +99,7 @@ export async function ensureDbOpen(basePath: string = process.cwd()): Promise<bo
       const hasRequirements = existsSync(join(gsdDir, "REQUIREMENTS.md"));
       const hasMilestones = existsSync(join(gsdDir, "milestones"));
       if (hasDecisions || hasRequirements || hasMilestones) {
-        const opened = db.openDatabase(dbPath);
+        const opened = backend.open(dbPath);
         if (opened) {
           setLogBasePath(projectRoot);
           try {
@@ -111,7 +113,7 @@ export async function ensureDbOpen(basePath: string = process.cwd()): Promise<bo
       }
 
       // .gsd/ exists but has no Markdown content (fresh project) — create empty DB
-      const opened = db.openDatabase(dbPath);
+      const opened = backend.open(dbPath);
       if (opened) setLogBasePath(projectRoot);
       return opened;
     }

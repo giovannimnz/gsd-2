@@ -1,13 +1,6 @@
 import { ensureDbOpen } from "../bootstrap/dynamic-tools.js";
 import { sanitizeCompleteMilestoneParams } from "../bootstrap/sanitize-complete-milestone.js";
 import { loadWriteGateSnapshot, shouldBlockContextArtifactSaveInSnapshot } from "../bootstrap/write-gate.js";
-import {
-  getMilestone,
-  getSliceStatusSummary,
-  getSliceTaskCounts,
-  _getAdapter,
-  saveGateResult,
-} from "../gsd-db.js";
 import { GATE_REGISTRY } from "../gate-registry.js";
 import { saveArtifactToDb } from "../db-writer.js";
 import type { CompleteMilestoneParams } from "./complete-milestone.js";
@@ -26,7 +19,6 @@ import { handleReassessRoadmap } from "./reassess-roadmap.js";
 import type { ValidateMilestoneParams } from "./validate-milestone.js";
 import { handleValidateMilestone } from "./validate-milestone.js";
 import { logError, logWarning } from "../workflow-logger.js";
-import { invalidateStateCache } from "../state.js";
 
 export const SUPPORTED_SUMMARY_ARTIFACT_TYPES = ["SUMMARY", "RESEARCH", "CONTEXT", "ASSESSMENT", "CONTEXT-DRAFT"] as const;
 
@@ -449,7 +441,11 @@ export async function executeSaveGateResult(
   }
 
   try {
-    saveGateResult({
+    const { createStorageBackend } = await import("../storage-factory.js");
+    const backend = createStorageBackend(basePath);
+    const { invalidateStateCache } = await import("../state.js");
+
+    backend.saveGateResult({
       milestoneId: params.milestoneId,
       sliceId: params.sliceId,
       gateId: params.gateId,
@@ -616,26 +612,27 @@ export async function executeMilestoneStatus(
       };
     }
 
-    const adapter = _getAdapter()!;
-    adapter.exec("BEGIN");
-    try {
-      const milestone = getMilestone(params.milestoneId);
+    const { createStorageBackend } = await import("../storage-factory.js");
+    const backend = createStorageBackend(basePath);
+
+    backend.transaction(() => {
+      const milestone = backend.getMilestone(params.milestoneId);
       if (!milestone) {
-        adapter.exec("COMMIT");
-        return {
-          content: [{ type: "text", text: `Milestone ${params.milestoneId} not found in database.` }],
-          details: { operation: "milestone_status", milestoneId: params.milestoneId, found: false },
-        };
+        throw Object.assign(new Error(`Milestone ${params.milestoneId} not found`), {
+          details: {
+            operation: "milestone_status",
+            milestoneId: params.milestoneId,
+            found: false,
+          },
+        });
       }
 
-      const sliceStatuses = getSliceStatusSummary(params.milestoneId);
+      const sliceStatuses = backend.getSliceStatusSummary(params.milestoneId);
       const slices = sliceStatuses.map((s) => ({
         id: s.id,
         status: s.status,
-        taskCounts: getSliceTaskCounts(params.milestoneId, s.id),
+        taskCounts: backend.getSliceTaskCounts(params.milestoneId, s.id),
       }));
-
-      adapter.exec("COMMIT");
 
       const result = {
         milestoneId: milestone.id,
@@ -647,21 +644,47 @@ export async function executeMilestoneStatus(
         slices,
       };
 
+      throw Object.assign(new Error("__SUCCESS__"), {
+        details: {
+          operation: "milestone_status",
+          milestoneId: milestone.id,
+          sliceCount: slices.length,
+          result,
+        },
+      });
+    });
+
+    // Should not reach here
+    return {
+      content: [{ type: "text", text: "Error: Unexpected flow in milestone status query" }],
+      details: { operation: "milestone_status", error: "unexpected_flow" },
+      isError: true,
+    };
+  } catch (err: unknown) {
+    if (err instanceof Error && err.message === "__SUCCESS__") {
+      const details = (err as any).details;
       return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-        details: { operation: "milestone_status", milestoneId: milestone.id, sliceCount: slices.length },
+        content: [{ type: "text", text: JSON.stringify(details.result, null, 2) }],
+        details: {
+          operation: "milestone_status",
+          milestoneId: details.milestoneId,
+          sliceCount: details.sliceCount,
+        },
       };
-    } catch (txErr) {
-      try { adapter.exec("ROLLBACK"); } catch { /* swallow */ }
-      throw txErr;
     }
-  } catch (err) {
+    if (err instanceof Error && (err as any).details?.found === false) {
+      const details = (err as any).details;
+      return {
+        content: [{ type: "text", text: `Milestone ${params.milestoneId} not found in database.` }],
+        details: { operation: "milestone_status", milestoneId: params.milestoneId, found: false },
+      };
+    }
     const msg = err instanceof Error ? err.message : String(err);
     logWarning("tool", `gsd_milestone_status tool failed: ${msg}`);
     return {
       content: [{ type: "text", text: `Error querying milestone status: ${msg}` }],
       details: { operation: "milestone_status", error: msg },
-    isError: true,
-      };
+      isError: true,
+    };
   }
 }

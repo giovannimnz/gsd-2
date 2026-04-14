@@ -208,13 +208,13 @@ export function generateRequirementsMd(requirements: Requirement[]): string {
  */
 export async function nextDecisionId(): Promise<string> {
   try {
-    const db = await import('./gsd-db.js');
-    const adapter = db._getAdapter();
-    if (!adapter) return 'D001';
+    const { createStorageBackend } = await import('./storage-factory.js');
+    const backend = createStorageBackend();
+    if (!backend.isOpen()) return 'D001';
 
-    const row = adapter
-      .prepare('SELECT MAX(CAST(SUBSTR(id, 2) AS INTEGER)) as max_num FROM decisions')
-      .get();
+    const row = backend.queryOne(
+      'SELECT MAX(CAST(SUBSTR(id, 2) AS INTEGER)) as max_num FROM decisions'
+    );
 
     const maxNum = row ? (row['max_num'] as number | null) : null;
     if (maxNum == null || isNaN(maxNum)) return 'D001';
@@ -236,13 +236,13 @@ export async function nextDecisionId(): Promise<string> {
  */
 export async function nextRequirementId(): Promise<string> {
   try {
-    const db = await import('./gsd-db.js');
-    const adapter = db._getAdapter();
-    if (!adapter) return 'R001';
+    const { createStorageBackend } = await import('./storage-factory.js');
+    const backend = createStorageBackend();
+    if (!backend.isOpen()) return 'R001';
 
-    const row = adapter
-      .prepare('SELECT MAX(CAST(SUBSTR(id, 2) AS INTEGER)) as max_num FROM requirements')
-      .get();
+    const row = backend.queryOne(
+      'SELECT MAX(CAST(SUBSTR(id, 2) AS INTEGER)) as max_num FROM requirements'
+    );
 
     const maxNum = row ? (row['max_num'] as number | null) : null;
     if (maxNum == null || isNaN(maxNum)) return 'R001';
@@ -283,16 +283,16 @@ export async function saveRequirementToDb(
   basePath: string,
 ): Promise<{ id: string }> {
   try {
-    const db = await import('./gsd-db.js');
+    const { createStorageBackend } = await import('./storage-factory.js');
+    const backend = createStorageBackend(basePath);
 
     // Atomic ID assignment + insert inside a transaction.
-    const id = db.transaction(() => {
-      const adapter = db._getAdapter();
-      if (!adapter) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+    const id = backend.transaction(() => {
+      if (!backend.isOpen()) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
 
-      const row = adapter
-        .prepare('SELECT MAX(CAST(SUBSTR(id, 2) AS INTEGER)) as max_num FROM requirements')
-        .get();
+      const row = backend.queryOne(
+        'SELECT MAX(CAST(SUBSTR(id, 2) AS INTEGER)) as max_num FROM requirements'
+      );
       const maxNum = row ? (row['max_num'] as number | null) : null;
       const nextId = (maxNum == null || isNaN(maxNum))
         ? 'R001'
@@ -313,15 +313,14 @@ export async function saveRequirementToDb(
         superseded_by: null,
       };
 
-      db.upsertRequirement(requirement);
+      backend.upsertRequirement(requirement);
       return nextId;
     });
 
     // Fetch all requirements for full file regeneration
-    const adapter = db._getAdapter();
     let allRequirements: Requirement[] = [];
-    if (adapter) {
-      const rows = adapter.prepare('SELECT * FROM requirements ORDER BY id').all();
+    if (backend.isOpen()) {
+      const rows = backend.query('SELECT * FROM requirements ORDER BY id');
       allRequirements = rows.map(row => ({
         id: row['id'] as string,
         class: row['class'] as string,
@@ -346,8 +345,7 @@ export async function saveRequirementToDb(
     } catch (diskErr) {
       logError('manifest', 'disk write failed, rolling back DB row', { fn: 'saveRequirementToDb', error: String((diskErr as Error).message) });
       try {
-        const rollbackAdapter = db._getAdapter();
-        rollbackAdapter?.prepare('DELETE FROM requirements WHERE id = :id').run({ ':id': id });
+        backend.query(`DELETE FROM requirements WHERE id = '${id}'`);
       } catch (rollbackErr) {
         logError('manifest', 'SPLIT BRAIN: disk write failed AND DB rollback failed — DB has orphaned row', { fn: 'saveRequirementToDb', id, error: String((rollbackErr as Error).message) });
       }
@@ -391,23 +389,23 @@ export async function saveDecisionToDb(
   basePath: string,
 ): Promise<{ id: string }> {
   try {
-    const db = await import('./gsd-db.js');
+    const { createStorageBackend } = await import('./storage-factory.js');
+    const backend = createStorageBackend(basePath);
 
     // Atomic ID assignment + insert inside a transaction to prevent
     // parallel calls from racing on the same MAX(id) value.
-    const id = db.transaction(() => {
-      const adapter = db._getAdapter();
-      if (!adapter) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+    const id = backend.transaction(() => {
+      if (!backend.isOpen()) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
 
-      const row = adapter
-        .prepare('SELECT MAX(CAST(SUBSTR(id, 2) AS INTEGER)) as max_num FROM decisions')
-        .get();
+      const row = backend.queryOne(
+        'SELECT MAX(CAST(SUBSTR(id, 2) AS INTEGER)) as max_num FROM decisions'
+      );
       const maxNum = row ? (row['max_num'] as number | null) : null;
       const nextId = (maxNum == null || isNaN(maxNum))
         ? 'D001'
         : `D${String(maxNum + 1).padStart(3, '0')}`;
 
-      db.upsertDecision({
+      backend.upsertDecision({
         id: nextId,
         when_context: fields.when_context ?? '',
         scope: fields.scope,
@@ -423,10 +421,9 @@ export async function saveDecisionToDb(
     });
 
     // Fetch all decisions (including superseded for the full register)
-    const adapter = db._getAdapter();
     let allDecisions: Decision[] = [];
-    if (adapter) {
-      const rows = adapter.prepare('SELECT * FROM decisions ORDER BY seq').all();
+    if (backend.isOpen()) {
+      const rows = backend.query('SELECT * FROM decisions ORDER BY seq');
       allDecisions = rows.map(row => ({
         seq: row['seq'] as number,
         id: row['id'] as string,
@@ -471,7 +468,7 @@ export async function saveDecisionToDb(
     } catch (diskErr) {
       logError('manifest', 'disk write failed, rolling back DB row', { fn: 'saveDecisionToDb', error: String((diskErr as Error).message) });
       try {
-        adapter?.prepare('DELETE FROM decisions WHERE id = :id').run({ ':id': id });
+        backend.run('DELETE FROM decisions WHERE id = ?', [id]);
       } catch (rollbackErr) {
         logError('manifest', 'SPLIT BRAIN: disk write failed AND DB rollback failed — DB has orphaned row', { fn: 'saveDecisionToDb', id, error: String((rollbackErr as Error).message) });
       }
@@ -484,7 +481,7 @@ export async function saveDecisionToDb(
     try {
       const sliceRef = extractDeferredSliceRef(fields);
       if (sliceRef) {
-        db.updateSliceStatus(sliceRef.milestoneId, sliceRef.sliceId, 'deferred');
+        backend.updateSliceStatus(sliceRef.milestoneId, sliceRef.sliceId, 'deferred');
       }
     } catch (deferErr) {
       // Non-fatal — log but don't fail the decision save
@@ -552,9 +549,10 @@ export async function updateRequirementInDb(
   basePath: string,
 ): Promise<void> {
   try {
-    const db = await import('./gsd-db.js');
+    const { createStorageBackend } = await import('./storage-factory.js');
+    const backend = createStorageBackend(basePath);
 
-    let existing = db.getRequirementById(id);
+    let existing = backend.getRequirementById(id);
 
     // If requirement doesn't exist in DB, seed the entire requirements table
     // from REQUIREMENTS.md first (#3346). This handles the standard workflow
@@ -571,12 +569,12 @@ export async function updateRequirementInDb(
           logWarning('manifest', `Seeding ${parsed.length} requirements from REQUIREMENTS.md into DB (first update triggers import)`, { fn: 'updateRequirementInDb' });
           for (const req of parsed) {
             // Only seed if not already in DB (avoid overwriting concurrent inserts)
-            if (!db.getRequirementById(req.id)) {
-              db.upsertRequirement(req);
+            if (!backend.getRequirementById(req.id)) {
+              backend.upsertRequirement(req);
             }
           }
           // Re-check after seeding
-          existing = db.getRequirementById(id);
+          existing = backend.getRequirementById(id);
         }
       } catch {
         // REQUIREMENTS.md missing or unparseable — fall through to skeleton
@@ -605,13 +603,12 @@ export async function updateRequirementInDb(
       id: base.id, // ID cannot be changed
     };
 
-    db.upsertRequirement(merged);
+    backend.upsertRequirement(merged);
 
     // Fetch ALL requirements (including superseded) for full file regeneration
-    const adapter = db._getAdapter();
     let allRequirements: Requirement[] = [];
-    if (adapter) {
-      const rows = adapter.prepare('SELECT * FROM requirements ORDER BY id').all();
+    if (backend.isOpen()) {
+      const rows = backend.query('SELECT * FROM requirements ORDER BY id');
       allRequirements = rows.map(row => ({
         id: row['id'] as string,
         class: row['class'] as string,
@@ -639,7 +636,7 @@ export async function updateRequirementInDb(
     } catch (diskErr) {
       logError('manifest', 'disk write failed, reverting DB row', { fn: 'updateRequirementInDb', error: String((diskErr as Error).message) });
       if (existing) {
-        db.upsertRequirement(existing);
+        backend.upsertRequirement(existing);
       }
       throw diskErr;
     }
@@ -675,7 +672,8 @@ export async function saveArtifactToDb(
   basePath: string,
 ): Promise<void> {
   try {
-    const db = await import('./gsd-db.js');
+    const { createStorageBackend } = await import('./storage-factory.js');
+    const backend = createStorageBackend(basePath);
 
     // Guard against path traversal before any reads/writes
     const gsdDir = resolve(basePath, '.gsd');
@@ -699,7 +697,7 @@ export async function saveArtifactToDb(
       }
     }
 
-    db.insertArtifact({
+    backend.insertArtifact({
       path: opts.path,
       artifact_type: opts.artifact_type,
       milestone_id: opts.milestone_id ?? null,
@@ -714,8 +712,7 @@ export async function saveArtifactToDb(
         await saveFile(fullPath, opts.content);
       } catch (diskErr) {
         logError('manifest', 'disk write failed, rolling back DB row', { fn: 'saveArtifactToDb', error: String((diskErr as Error).message) });
-        const rollbackAdapter = db._getAdapter();
-        rollbackAdapter?.prepare('DELETE FROM artifacts WHERE path = :path').run({ ':path': opts.path });
+        backend.run('DELETE FROM artifacts WHERE path = ?', [opts.path]);
         throw diskErr;
       }
     }

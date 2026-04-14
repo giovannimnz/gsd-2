@@ -379,8 +379,9 @@ export function registerDbTools(pi: ExtensionAPI): void {
     const dbAvailable = await ensureDbOpen();
     if (!dbAvailable) return;
     try {
-      const { insertMilestone } = await import("../gsd-db.js");
-      insertMilestone({ id: milestoneId, status: "queued" });
+      const { createStorageBackend } = await import("../storage-factory.js");
+      const backend = createStorageBackend();
+      backend.insertMilestone({ id: milestoneId, status: "queued" });
     } catch (e) {
       logError("tool", `insertMilestone failed for ${milestoneId}: ${(e as Error).message}`);
     }
@@ -758,10 +759,11 @@ export function registerDbTools(pi: ExtensionAPI): void {
       };
     }
     try {
-      const { getSlice, updateSliceStatus } = await import("../gsd-db.js");
+      const { createStorageBackend } = await import("../storage-factory.js");
+      const backend = createStorageBackend();
       const { invalidateStateCache } = await import("../state.js");
 
-      const slice = getSlice(params.milestoneId, params.sliceId);
+      const slice = backend.getSlice(params.milestoneId, params.sliceId);
       if (!slice) {
         return {
           content: [{ type: "text" as const, text: `Error: Slice ${params.sliceId} not found in milestone ${params.milestoneId}` }],
@@ -783,7 +785,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
         };
       }
 
-      updateSliceStatus(params.milestoneId, params.sliceId, "skipped");
+      backend.updateSliceStatus(params.milestoneId, params.sliceId, "skipped");
       invalidateStateCache();
 
       // Rebuild STATE.md so it reflects the skip immediately (#3477).

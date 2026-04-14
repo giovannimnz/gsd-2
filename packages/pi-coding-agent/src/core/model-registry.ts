@@ -531,9 +531,28 @@ export class ModelRegistry {
 	/**
 	 * Get only models that have auth configured.
 	 * This is a fast check that doesn't refresh OAuth tokens.
+	 * Includes both built-in/custom models and discovered models.
 	 */
 	getAvailable(): Model<Api>[] {
-		return this.models.filter((m) => this.isProviderRequestReady(m.provider));
+		const base = this.models.filter((m) => this.isProviderRequestReady(m.provider));
+		// Include discovered models for providers that are request-ready
+		const discoveredAvailable = this.discoveredModels.filter(
+			(m) => this.isProviderRequestReady(m.provider),
+		);
+		// Merge: discovered models override base models by provider+id
+		const byKey = new Map<string, Model<Api>>();
+		for (const m of base) {
+			byKey.set(`${m.provider}/${m.id}`, m);
+		}
+		for (const m of discoveredAvailable) {
+			const key = `${m.provider}/${m.id}`;
+			const existing = byKey.get(key);
+			// Discovered model overrides base model if it has a name (enriched metadata)
+			if (!existing || (m.name && m.name !== m.id)) {
+				byKey.set(key, m);
+			}
+		}
+		return Array.from(byKey.values());
 	}
 
 	/**

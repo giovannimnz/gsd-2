@@ -25,21 +25,23 @@ function encodeCwd(cwd: string): string {
 	return createHash("sha256").update(cwd).digest("hex").slice(0, 16);
 }
 
-/** Get the memory directory for a project */
-function getMemoryDir(cwd: string): string {
-	return join(getAgentDir(), "memories", encodeCwd(cwd));
+/** Get the memory storage directory for a project (JSON files: jobs, threads, stage1) */
+function getMemoryStorageDir(cwd: string): string {
+	const encoded = encodeCwd(cwd);
+	return join(getAgentDir(), "memory", encoded);
 }
 
-/** Get the database path */
-function getDbPath(): string {
-	return join(getAgentDir(), "agent.db");
+/** Get the memory output directory for a project (MEMORY.md, memory_summary.md) */
+function getMemoryDir(cwd: string): string {
+	const encoded = encodeCwd(cwd);
+	return join(getAgentDir(), "memories", encoded);
 }
 
 let storageInstance: MemoryStorage | null = null;
 
-async function getStorage(): Promise<MemoryStorage> {
+async function getStorage(cwd: string): Promise<MemoryStorage> {
 	if (!storageInstance) {
-		storageInstance = await MemoryStorage.create(getDbPath());
+		storageInstance = await MemoryStorage.create(getMemoryStorageDir(cwd));
 	}
 	return storageInstance;
 }
@@ -125,7 +127,7 @@ export default function memoryExtension(api: ExtensionAPI): void {
 
 		// Fire and forget
 		runStartup(
-			await getStorage(),
+			await getStorage(cwd),
 			{
 				sessionsDir,
 				memoryDir,
@@ -203,7 +205,7 @@ export default function memoryExtension(api: ExtensionAPI): void {
 						"Delete all extracted memories for this project?",
 					);
 					if (confirmed) {
-						(await getStorage()).clearForCwd(ctx.cwd);
+						(await getStorage(ctx.cwd)).clearForCwd(ctx.cwd);
 						if (existsSync(projectMemoryDir)) {
 							rmSync(projectMemoryDir, { recursive: true, force: true });
 						}
@@ -218,7 +220,7 @@ export default function memoryExtension(api: ExtensionAPI): void {
 						"Re-extract all memories from session history? This may take a while.",
 					);
 					if (confirmed) {
-						(await getStorage()).resetAllForCwd(ctx.cwd);
+						(await getStorage(ctx.cwd)).resetAllForCwd(ctx.cwd);
 						if (existsSync(projectMemoryDir)) {
 							rmSync(projectMemoryDir, { recursive: true, force: true });
 						}
@@ -231,7 +233,7 @@ export default function memoryExtension(api: ExtensionAPI): void {
 				}
 
 				case "stats": {
-					const stats = (await getStorage()).getStats();
+					const stats = (await getStorage(ctx.cwd)).getStats();
 					const statsText = [
 						"Memory Pipeline Statistics:",
 						`  Total sessions tracked: ${stats.totalThreads}`,

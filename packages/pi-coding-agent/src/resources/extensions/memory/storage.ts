@@ -1,16 +1,30 @@
 /**
- * SQLite storage for the memory extraction pipeline.
+ * JSON file storage for the memory extraction pipeline.
  *
- * Tables:
- * - threads: tracks session files and their processing state
- * - stage1_outputs: stores per-thread extraction results
- * - jobs: lease-based job queue for pipeline phases
+ * Replaces sql.js (SQLite in-memory) with individual JSON files.
+ *
+ * File structure:
+ * - .gsd/memory/jobs/{job-id}.json
+ * - .gsd/memory/threads/{thread-id}.json
+ * - .gsd/memory/stage1/{thread-id}.json
+ *
+ * Each JSON file contains the full row data. Directory scans replace SQL indexes.
+ * Atomic writes via temp file + rename.
  */
 
-import initSqlJs, { type Database as SqlJsDatabase } from "sql.js";
 import { randomUUID } from "crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { dirname } from "path";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	readdirSync,
+	renameSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
 
 export interface ThreadRow {
 	thread_id: string;
@@ -43,38 +57,186 @@ export interface JobRow {
 	updated_at: string;
 }
 
+interface JobFileData {
+	id: string;
+	phase: "stage1" | "stage2";
+	thread_id: string | null;
+	status: "pending" | "claimed" | "done" | "error";
+	worker_id: string | null;
+	ownership_token: string | null;
+	lease_expires_at: string | null;
+	error_message: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+interface ThreadFileData {
+	thread_id: string;
+	file_path: string;
+	file_size: number;
+	file_mtime: number;
+	cwd: string;
+	status: "pending" | "processing" | "done" | "error";
+	error_message: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+interface Stage1FileData {
+	thread_id: string;
+	extraction_json: string;
+	created_at: string;
+}
+
+/**
+ * Atomic write: write to temp file, then rename.
+ * Ensures readers never see partial writes.
+ */
+function atomicWrite(filePath: string, content: string): void {
+	const dir = join(filePath, "..");
+	const tempPath = join(tmpdir(), `gsd-memory-${randomUUID()}.tmp`);
+	writeFileSync(tempPath, content, "utf-8");
+	renameSync(tempPath, filePath);
+}
+
+/**
+ * Read and parse a JSON file, or return undefined if not found.
+ */
+function readJsonFile<T>(filePath: string): T | undefined {
+	if (!existsSync(filePath)) {
+		return undefined;
+	}
+	try {
+		const raw = readFileSync(filePath, "utf-8");
+		return JSON.parse(raw) as T;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Serialize to JSON with consistent formatting.
+ */
+function toJson(data: unknown): string {
+	return JSON.stringify(data, null, 2);
+}
+
+/**
+ * Get the current ISO timestamp.
+ */
+function nowISO(): string {
+	return new Date().toISOString();
+}
+
 export class MemoryStorage {
-	private db: SqlJsDatabase;
-	private dbPath: string;
+	private baseDir: string;
+	private jobsDir: string;
+	private threadsDir: string;
+	private stage1Dir: string;
+
+	// In-memory cache for fast lookups
+	private jobsCache: Map<string, JobFileData> = new Map();
+	private threadsCache: Map<string, ThreadFileData> = new Map();
+	private stage1Cache: Map<string, Stage1FileData> = new Map();
+
 	private persistTimer: ReturnType<typeof setTimeout> | null = null;
 
-	private constructor(db: SqlJsDatabase, dbPath: string) {
-		this.db = db;
-		this.dbPath = dbPath;
+	private constructor(baseDir: string) {
+		this.baseDir = baseDir;
+		this.jobsDir = join(baseDir, "jobs");
+		this.threadsDir = join(baseDir, "threads");
+		this.stage1Dir = join(baseDir, "stage1");
 	}
 
-	static async create(dbPath: string): Promise<MemoryStorage> {
-		const dir = dirname(dbPath);
-		if (!existsSync(dir)) {
-			mkdirSync(dir, { recursive: true });
-		}
-
-		const SQL = await initSqlJs();
-		const buffer = existsSync(dbPath) ? readFileSync(dbPath) : undefined;
-		const db = buffer ? new SQL.Database(buffer) : new SQL.Database();
-
-		db.run("PRAGMA journal_mode = WAL");
-		db.run("PRAGMA synchronous = NORMAL");
-		db.run("PRAGMA busy_timeout = 5000");
-
-		const storage = new MemoryStorage(db, dbPath);
-		storage.initSchema();
+	/**
+	 * Create or open a MemoryStorage at the given base directory.
+	 * If old agent.db exists, migration is handled separately.
+	 */
+	static async create(baseDir: string): Promise<MemoryStorage> {
+		const storage = new MemoryStorage(baseDir);
+		storage.ensureDirs();
+		await storage.loadFromFiles();
 		return storage;
 	}
 
-	private persist(): void {
-		const data = this.db.export();
-		writeFileSync(this.dbPath, Buffer.from(data));
+	private ensureDirs(): void {
+		if (!existsSync(this.baseDir)) {
+			mkdirSync(this.baseDir, { recursive: true });
+		}
+		if (!existsSync(this.jobsDir)) {
+			mkdirSync(this.jobsDir, { recursive: true });
+		}
+		if (!existsSync(this.threadsDir)) {
+			mkdirSync(this.threadsDir, { recursive: true });
+		}
+		if (!existsSync(this.stage1Dir)) {
+			mkdirSync(this.stage1Dir, { recursive: true });
+		}
+	}
+
+	private async loadFromFiles(): Promise<void> {
+		// Load jobs
+		try {
+			const entries = readdirSync(this.jobsDir);
+			for (const entry of entries) {
+				if (!entry.endsWith(".json")) continue;
+				const data = readJsonFile<JobFileData>(join(this.jobsDir, entry));
+				if (data) {
+					this.jobsCache.set(data.id, data);
+				}
+			}
+		} catch {
+			// Dir doesn't exist yet
+		}
+
+		// Load threads
+		try {
+			const entries = readdirSync(this.threadsDir);
+			for (const entry of entries) {
+				if (!entry.endsWith(".json")) continue;
+				const data = readJsonFile<ThreadFileData>(join(this.threadsDir, entry));
+				if (data) {
+					this.threadsCache.set(data.thread_id, data);
+				}
+			}
+		} catch {
+			// Dir doesn't exist yet
+		}
+
+		// Load stage1 outputs
+		try {
+			const entries = readdirSync(this.stage1Dir);
+			for (const entry of entries) {
+				if (!entry.endsWith(".json")) continue;
+				const data = readJsonFile<Stage1FileData>(join(this.stage1Dir, entry));
+				if (data) {
+					this.stage1Cache.set(data.thread_id, data);
+				}
+			}
+		} catch {
+			// Dir doesn't exist yet
+		}
+	}
+
+	private persistJob(id: string): void {
+		const data = this.jobsCache.get(id);
+		if (!data) return;
+		const filePath = join(this.jobsDir, `${id}.json`);
+		atomicWrite(filePath, toJson(data));
+	}
+
+	private persistThread(threadId: string): void {
+		const data = this.threadsCache.get(threadId);
+		if (!data) return;
+		const filePath = join(this.threadsDir, `${threadId}.json`);
+		atomicWrite(filePath, toJson(data));
+	}
+
+	private persistStage1(threadId: string): void {
+		const data = this.stage1Cache.get(threadId);
+		if (!data) return;
+		const filePath = join(this.stage1Dir, `${threadId}.json`);
+		atomicWrite(filePath, toJson(data));
 	}
 
 	private schedulePersist(): void {
@@ -83,66 +245,20 @@ export class MemoryStorage {
 		}
 		this.persistTimer = setTimeout(() => {
 			this.persistTimer = null;
-			this.persist();
+			this.persistAll();
 		}, 500);
 	}
 
-	private initSchema(): void {
-		this.db.run(`
-			CREATE TABLE IF NOT EXISTS threads (
-				thread_id TEXT PRIMARY KEY,
-				file_path TEXT NOT NULL,
-				file_size INTEGER NOT NULL DEFAULT 0,
-				file_mtime INTEGER NOT NULL DEFAULT 0,
-				cwd TEXT NOT NULL DEFAULT '',
-				status TEXT NOT NULL DEFAULT 'pending',
-				error_message TEXT,
-				created_at TEXT NOT NULL DEFAULT (datetime('now')),
-				updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-			)
-		`);
-		this.db.run(`
-			CREATE TABLE IF NOT EXISTS stage1_outputs (
-				thread_id TEXT PRIMARY KEY,
-				extraction_json TEXT NOT NULL,
-				created_at TEXT NOT NULL DEFAULT (datetime('now')),
-				FOREIGN KEY (thread_id) REFERENCES threads(thread_id) ON DELETE CASCADE
-			)
-		`);
-		this.db.run(`
-			CREATE TABLE IF NOT EXISTS jobs (
-				id TEXT PRIMARY KEY,
-				phase TEXT NOT NULL,
-				thread_id TEXT,
-				status TEXT NOT NULL DEFAULT 'pending',
-				worker_id TEXT,
-				ownership_token TEXT,
-				lease_expires_at TEXT,
-				error_message TEXT,
-				created_at TEXT NOT NULL DEFAULT (datetime('now')),
-				updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-			)
-		`);
-		this.db.run("CREATE INDEX IF NOT EXISTS idx_jobs_phase_status ON jobs(phase, status)");
-		this.db.run("CREATE INDEX IF NOT EXISTS idx_threads_status ON threads(status)");
-		this.db.run("CREATE INDEX IF NOT EXISTS idx_threads_cwd ON threads(cwd)");
-		this.persist();
-	}
-
-	private queryAll<T>(sql: string, params: unknown[] = []): T[] {
-		const stmt = this.db.prepare(sql);
-		stmt.bind(params as (string | number | null | Uint8Array)[]);
-		const rows: T[] = [];
-		while (stmt.step()) {
-			rows.push(stmt.getAsObject() as T);
+	private persistAll(): void {
+		for (const [id] of this.jobsCache) {
+			this.persistJob(id);
 		}
-		stmt.free();
-		return rows;
-	}
-
-	private queryOne<T>(sql: string, params: unknown[] = []): T | undefined {
-		const rows = this.queryAll<T>(sql, params);
-		return rows[0];
+		for (const [threadId] of this.threadsCache) {
+			this.persistThread(threadId);
+		}
+		for (const [threadId] of this.stage1Cache) {
+			this.persistStage1(threadId);
+		}
 	}
 
 	/**
@@ -163,31 +279,69 @@ export class MemoryStorage {
 		let skipped = 0;
 
 		for (const t of threads) {
-			const existing = this.queryOne<{ file_size: number; file_mtime: number; status: string }>(
-				"SELECT file_size, file_mtime, status FROM threads WHERE thread_id = ?",
-				[t.threadId],
-			);
+			const existing = this.threadsCache.get(t.threadId);
 
 			if (!existing) {
-				this.db.run(
-					"INSERT INTO threads (thread_id, file_path, file_size, file_mtime, cwd, status) VALUES (?, ?, ?, ?, ?, 'pending')",
-					[t.threadId, t.filePath, t.fileSize, t.fileMtime, t.cwd],
-				);
-				this.db.run(
-					"INSERT OR IGNORE INTO jobs (id, phase, thread_id, status) VALUES (?, 'stage1', ?, 'pending')",
-					[randomUUID(), t.threadId],
-				);
+				const now = nowISO();
+				const threadData: ThreadFileData = {
+					thread_id: t.threadId,
+					file_path: t.filePath,
+					file_size: t.fileSize,
+					file_mtime: t.fileMtime,
+					cwd: t.cwd,
+					status: "pending",
+					error_message: null,
+					created_at: now,
+					updated_at: now,
+				};
+				this.threadsCache.set(t.threadId, threadData);
+
+				// Create a pending stage1 job
+				const jobId = randomUUID();
+				const jobData: JobFileData = {
+					id: jobId,
+					phase: "stage1",
+					thread_id: t.threadId,
+					status: "pending",
+					worker_id: null,
+					ownership_token: null,
+					lease_expires_at: null,
+					error_message: null,
+					created_at: now,
+					updated_at: now,
+				};
+				this.jobsCache.set(jobId, jobData);
+
 				inserted++;
 			} else if (existing.file_size !== t.fileSize || existing.file_mtime !== t.fileMtime) {
-				this.db.run(
-					"UPDATE threads SET file_path = ?, file_size = ?, file_mtime = ?, cwd = ?, status = 'pending', updated_at = datetime('now') WHERE thread_id = ?",
-					[t.filePath, t.fileSize, t.fileMtime, t.cwd, t.threadId],
-				);
+				const now = nowISO();
+				this.threadsCache.set(t.threadId, {
+					...existing,
+					file_path: t.filePath,
+					file_size: t.fileSize,
+					file_mtime: t.fileMtime,
+					cwd: t.cwd,
+					status: "pending",
+					updated_at: now,
+				});
+
+				// Re-enqueue job if thread was done or errored
 				if (existing.status === "done" || existing.status === "error") {
-					this.db.run(
-						"INSERT OR IGNORE INTO jobs (id, phase, thread_id, status) VALUES (?, 'stage1', ?, 'pending')",
-						[randomUUID(), t.threadId],
-					);
+					const now2 = nowISO();
+					const jobId = randomUUID();
+					const jobData: JobFileData = {
+						id: jobId,
+						phase: "stage1",
+						thread_id: t.threadId,
+						status: "pending",
+						worker_id: null,
+						ownership_token: null,
+						lease_expires_at: null,
+						error_message: null,
+						created_at: now2,
+						updated_at: now2,
+					};
+					this.jobsCache.set(jobId, jobData);
 				}
 				updated++;
 			} else {
@@ -210,53 +364,82 @@ export class MemoryStorage {
 	): Array<{ jobId: string; threadId: string; ownershipToken: string }> {
 		const token = randomUUID();
 		const expiresAt = new Date(Date.now() + leaseSeconds * 1000).toISOString();
+		const now = nowISO();
 
-		this.db.run(
-			`UPDATE jobs SET
-				status = 'claimed',
-				worker_id = ?,
-				ownership_token = ?,
-				lease_expires_at = ?,
-				updated_at = datetime('now')
-			WHERE id IN (
-				SELECT id FROM jobs
-				WHERE phase = 'stage1'
-					AND (status = 'pending' OR (status = 'claimed' AND lease_expires_at < datetime('now')))
-				LIMIT ?
-			)`,
-			[workerId, token, expiresAt, limit],
-		);
+		// Find eligible jobs: pending, or claimed with expired lease
+		const eligible: JobFileData[] = [];
+		for (const job of this.jobsCache.values()) {
+			if (job.phase !== "stage1") continue;
+			if (job.status === "pending") {
+				eligible.push(job);
+			} else if (job.status === "claimed" && job.lease_expires_at) {
+				if (new Date(job.lease_expires_at) < new Date()) {
+					eligible.push(job);
+				}
+			}
+			if (eligible.length >= limit) break;
+		}
 
-		const rows = this.queryAll<{ id: string; thread_id: string }>(
-			"SELECT id, thread_id FROM jobs WHERE ownership_token = ? AND status = 'claimed'",
-			[token],
-		);
+		const claimed: Array<{ jobId: string; threadId: string; ownershipToken: string }> = [];
+		for (const job of eligible) {
+			const updated: JobFileData = {
+				...job,
+				status: "claimed",
+				worker_id: workerId,
+				ownership_token: token,
+				lease_expires_at: expiresAt,
+				updated_at: now,
+			};
+			this.jobsCache.set(job.id, updated);
+			if (job.thread_id) {
+				claimed.push({
+					jobId: job.id,
+					threadId: job.thread_id,
+					ownershipToken: token,
+				});
+			}
+		}
 
 		this.schedulePersist();
-
-		return rows.map((r) => ({
-			jobId: r.id,
-			threadId: r.thread_id,
-			ownershipToken: token,
-		}));
+		return claimed;
 	}
 
 	/**
 	 * Mark a stage1 job as complete and store the extraction output.
 	 */
 	completeStage1Job(threadId: string, output: string): void {
-		this.db.run(
-			"UPDATE jobs SET status = 'done', updated_at = datetime('now') WHERE thread_id = ? AND phase = 'stage1' AND status = 'claimed'",
-			[threadId],
-		);
-		this.db.run(
-			"INSERT OR REPLACE INTO stage1_outputs (thread_id, extraction_json, created_at) VALUES (?, ?, datetime('now'))",
-			[threadId, output],
-		);
-		this.db.run(
-			"UPDATE threads SET status = 'done', updated_at = datetime('now') WHERE thread_id = ?",
-			[threadId],
-		);
+		const now = nowISO();
+
+		// Mark job as done
+		for (const [id, job] of this.jobsCache) {
+			if (job.thread_id === threadId && job.phase === "stage1" && job.status === "claimed") {
+				this.jobsCache.set(id, {
+					...job,
+					status: "done",
+					updated_at: now,
+				});
+				break;
+			}
+		}
+
+		// Store output
+		const stage1Data: Stage1FileData = {
+			thread_id: threadId,
+			extraction_json: output,
+			created_at: now,
+		};
+		this.stage1Cache.set(threadId, stage1Data);
+
+		// Mark thread as done
+		const thread = this.threadsCache.get(threadId);
+		if (thread) {
+			this.threadsCache.set(threadId, {
+				...thread,
+				status: "done",
+				updated_at: now,
+			});
+		}
+
 		this.schedulePersist();
 	}
 
@@ -264,14 +447,32 @@ export class MemoryStorage {
 	 * Mark a stage1 job as errored.
 	 */
 	failStage1Job(threadId: string, errorMessage: string): void {
-		this.db.run(
-			"UPDATE jobs SET status = 'error', error_message = ?, updated_at = datetime('now') WHERE thread_id = ? AND phase = 'stage1' AND status = 'claimed'",
-			[errorMessage, threadId],
-		);
-		this.db.run(
-			"UPDATE threads SET status = 'error', error_message = ?, updated_at = datetime('now') WHERE thread_id = ?",
-			[errorMessage, threadId],
-		);
+		const now = nowISO();
+
+		// Mark job as error
+		for (const [id, job] of this.jobsCache) {
+			if (job.thread_id === threadId && job.phase === "stage1" && job.status === "claimed") {
+				this.jobsCache.set(id, {
+					...job,
+					status: "error",
+					error_message: errorMessage,
+					updated_at: now,
+				});
+				break;
+			}
+		}
+
+		// Mark thread as error
+		const thread = this.threadsCache.get(threadId);
+		if (thread) {
+			this.threadsCache.set(threadId, {
+				...thread,
+				status: "error",
+				error_message: errorMessage,
+				updated_at: now,
+			});
+		}
+
 		this.schedulePersist();
 	}
 
@@ -286,35 +487,45 @@ export class MemoryStorage {
 		const token = randomUUID();
 		const expiresAt = new Date(Date.now() + leaseSeconds * 1000).toISOString();
 
-		const pendingStage1 = this.queryOne<{ cnt: number }>(
-			"SELECT COUNT(*) as cnt FROM jobs WHERE phase = 'stage1' AND status IN ('pending', 'claimed')",
-		);
-
-		if (pendingStage1 && pendingStage1.cnt > 0) {
-			return null;
+		// Check for pending stage1 jobs
+		for (const job of this.jobsCache.values()) {
+			if (job.phase === "stage1" && (job.status === "pending" || job.status === "claimed")) {
+				return null;
+			}
 		}
 
-		const existingPhase2 = this.queryOne<{ id: string }>(
-			"SELECT id FROM jobs WHERE phase = 'stage2' AND status = 'claimed' AND lease_expires_at > datetime('now')",
-		);
-
-		if (existingPhase2) {
-			return null;
+		// Check for active stage2 jobs
+		for (const job of this.jobsCache.values()) {
+			if (
+				job.phase === "stage2" &&
+				job.status === "claimed" &&
+				job.lease_expires_at &&
+				new Date(job.lease_expires_at) > new Date()
+			) {
+				return null;
+			}
 		}
 
-		const outputCount = this.queryOne<{ cnt: number }>(
-			"SELECT COUNT(*) as cnt FROM stage1_outputs",
-		);
-
-		if (!outputCount || outputCount.cnt === 0) {
+		// Check for stage1 outputs
+		if (this.stage1Cache.size === 0) {
 			return null;
 		}
 
 		const jobId = randomUUID();
-		this.db.run(
-			"INSERT INTO jobs (id, phase, status, worker_id, ownership_token, lease_expires_at) VALUES (?, 'stage2', 'claimed', ?, ?, ?)",
-			[jobId, workerId, token, expiresAt],
-		);
+		const now = nowISO();
+		const jobData: JobFileData = {
+			id: jobId,
+			phase: "stage2",
+			thread_id: null,
+			status: "claimed",
+			worker_id: workerId,
+			ownership_token: token,
+			lease_expires_at: expiresAt,
+			error_message: null,
+			created_at: now,
+			updated_at: now,
+		};
+		this.jobsCache.set(jobId, jobData);
 
 		this.schedulePersist();
 		return { jobId, ownershipToken: token };
@@ -324,10 +535,14 @@ export class MemoryStorage {
 	 * Complete the phase 2 consolidation job.
 	 */
 	completePhase2Job(jobId: string): void {
-		this.db.run(
-			"UPDATE jobs SET status = 'done', updated_at = datetime('now') WHERE id = ? AND phase = 'stage2'",
-			[jobId],
-		);
+		const job = this.jobsCache.get(jobId);
+		if (job && job.phase === "stage2") {
+			this.jobsCache.set(jobId, {
+				...job,
+				status: "done",
+				updated_at: nowISO(),
+			});
+		}
 		this.schedulePersist();
 	}
 
@@ -335,41 +550,60 @@ export class MemoryStorage {
 	 * Get all stage1 extraction outputs.
 	 */
 	getStage1Outputs(): Array<{ threadId: string; extractionJson: string }> {
-		const rows = this.queryAll<{ thread_id: string; extraction_json: string }>(
-			"SELECT thread_id, extraction_json FROM stage1_outputs",
-		);
-
-		return rows.map((r) => ({
-			threadId: r.thread_id,
-			extractionJson: r.extraction_json,
-		}));
+		const results: Array<{ threadId: string; extractionJson: string }> = [];
+		for (const data of this.stage1Cache.values()) {
+			results.push({
+				threadId: data.thread_id,
+				extractionJson: data.extraction_json,
+			});
+		}
+		return results;
 	}
 
 	/**
 	 * Get all stage1 outputs for a specific cwd.
 	 */
 	getStage1OutputsForCwd(cwd: string): Array<{ threadId: string; extractionJson: string }> {
-		const rows = this.queryAll<{ thread_id: string; extraction_json: string }>(
-			`SELECT s.thread_id, s.extraction_json FROM stage1_outputs s
-			INNER JOIN threads t ON t.thread_id = s.thread_id
-			WHERE t.cwd = ?`,
-			[cwd],
-		);
+		const results: Array<{ threadId: string; extractionJson: string }> = [];
 
-		return rows.map((r) => ({
-			threadId: r.thread_id,
-			extractionJson: r.extraction_json,
-		}));
+		// Find threads matching this cwd
+		const matchingThreadIds = new Set<string>();
+		for (const thread of this.threadsCache.values()) {
+			if (thread.cwd === cwd) {
+				matchingThreadIds.add(thread.thread_id);
+			}
+		}
+
+		// Get stage1 outputs for those threads
+		for (const [threadId, data] of this.stage1Cache) {
+			if (matchingThreadIds.has(threadId)) {
+				results.push({
+					threadId: data.thread_id,
+					extractionJson: data.extraction_json,
+				});
+			}
+		}
+
+		return results;
 	}
 
 	/**
 	 * Get thread info by ID.
 	 */
 	getThread(threadId: string): ThreadRow | undefined {
-		return this.queryOne<ThreadRow>(
-			"SELECT * FROM threads WHERE thread_id = ?",
-			[threadId],
-		);
+		const data = this.threadsCache.get(threadId);
+		if (!data) return undefined;
+		return {
+			thread_id: data.thread_id,
+			file_path: data.file_path,
+			file_size: data.file_size,
+			file_mtime: data.file_mtime,
+			cwd: data.cwd,
+			status: data.status,
+			error_message: data.error_message,
+			created_at: data.created_at,
+			updated_at: data.updated_at,
+		};
 	}
 
 	/**
@@ -383,30 +617,32 @@ export class MemoryStorage {
 		totalStage1Outputs: number;
 		pendingStage1Jobs: number;
 	} {
-		const threads = this.queryOne<{ total: number; pending: number; done: number; errors: number }>(`
-			SELECT
-				COUNT(*) as total,
-				SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
-				SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done,
-				SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errors
-			FROM threads
-		`)!;
+		let totalThreads = 0;
+		let pendingThreads = 0;
+		let doneThreads = 0;
+		let errorThreads = 0;
 
-		const outputs = this.queryOne<{ cnt: number }>(
-			"SELECT COUNT(*) as cnt FROM stage1_outputs",
-		)!;
+		for (const thread of this.threadsCache.values()) {
+			totalThreads++;
+			if (thread.status === "pending") pendingThreads++;
+			else if (thread.status === "done") doneThreads++;
+			else if (thread.status === "error") errorThreads++;
+		}
 
-		const pendingJobs = this.queryOne<{ cnt: number }>(
-			"SELECT COUNT(*) as cnt FROM jobs WHERE phase = 'stage1' AND status IN ('pending', 'claimed')",
-		)!;
+		let pendingStage1Jobs = 0;
+		for (const job of this.jobsCache.values()) {
+			if (job.phase === "stage1" && (job.status === "pending" || job.status === "claimed")) {
+				pendingStage1Jobs++;
+			}
+		}
 
 		return {
-			totalThreads: threads.total,
-			pendingThreads: threads.pending,
-			doneThreads: threads.done,
-			errorThreads: threads.errors,
-			totalStage1Outputs: outputs.cnt,
-			pendingStage1Jobs: pendingJobs.cnt,
+			totalThreads,
+			pendingThreads,
+			doneThreads,
+			errorThreads,
+			totalStage1Outputs: this.stage1Cache.size,
+			pendingStage1Jobs,
 		};
 	}
 
@@ -414,57 +650,156 @@ export class MemoryStorage {
 	 * Clear all data (for /memory clear).
 	 */
 	clearAll(): void {
-		this.db.run("DELETE FROM stage1_outputs");
-		this.db.run("DELETE FROM jobs");
-		this.db.run("DELETE FROM threads");
-		this.schedulePersist();
+		this.stage1Cache.clear();
+		this.jobsCache.clear();
+		this.threadsCache.clear();
+
+		// Remove all files
+		try {
+			for (const entry of readdirSync(this.stage1Dir)) {
+				rmSync(join(this.stage1Dir, entry));
+			}
+		} catch {
+			// Dir doesn't exist
+		}
+		try {
+			for (const entry of readdirSync(this.jobsDir)) {
+				rmSync(join(this.jobsDir, entry));
+			}
+		} catch {
+			// Dir doesn't exist
+		}
+		try {
+			for (const entry of readdirSync(this.threadsDir)) {
+				rmSync(join(this.threadsDir, entry));
+			}
+		} catch {
+			// Dir doesn't exist
+		}
 	}
 
 	/**
 	 * Clear data for a specific cwd (for /memory clear in project scope).
 	 */
 	clearForCwd(cwd: string): void {
-		this.db.run(
-			"DELETE FROM stage1_outputs WHERE thread_id IN (SELECT thread_id FROM threads WHERE cwd = ?)",
-			[cwd],
-		);
-		this.db.run(
-			"DELETE FROM jobs WHERE thread_id IN (SELECT thread_id FROM threads WHERE cwd = ?)",
-			[cwd],
-		);
-		this.db.run("DELETE FROM threads WHERE cwd = ?", [cwd]);
-		this.schedulePersist();
+		// Find threads to remove
+		const toRemove: string[] = [];
+		for (const [threadId, thread] of this.threadsCache) {
+			if (thread.cwd === cwd) {
+				toRemove.push(threadId);
+			}
+		}
+
+		// Remove stage1 outputs
+		for (const threadId of toRemove) {
+			this.stage1Cache.delete(threadId);
+			try {
+				const filePath = join(this.stage1Dir, `${threadId}.json`);
+				if (existsSync(filePath)) rmSync(filePath);
+			} catch {
+				// File doesn't exist
+			}
+		}
+
+		// Remove jobs for those threads
+		const jobsToRemove: string[] = [];
+		for (const [jobId, job] of this.jobsCache) {
+			if (job.thread_id && toRemove.includes(job.thread_id)) {
+				jobsToRemove.push(jobId);
+			}
+		}
+		for (const jobId of jobsToRemove) {
+			this.jobsCache.delete(jobId);
+			try {
+				const filePath = join(this.jobsDir, `${jobId}.json`);
+				if (existsSync(filePath)) rmSync(filePath);
+			} catch {
+				// File doesn't exist
+			}
+		}
+
+		// Remove threads
+		for (const threadId of toRemove) {
+			this.threadsCache.delete(threadId);
+			try {
+				const filePath = join(this.threadsDir, `${threadId}.json`);
+				if (existsSync(filePath)) rmSync(filePath);
+			} catch {
+				// File doesn't exist
+			}
+		}
 	}
 
 	/**
 	 * Reset all threads to pending (for /memory rebuild).
 	 */
 	resetAllForCwd(cwd: string): void {
-		this.db.run(
-			"DELETE FROM stage1_outputs WHERE thread_id IN (SELECT thread_id FROM threads WHERE cwd = ?)",
-			[cwd],
-		);
-		this.db.run(
-			"DELETE FROM jobs WHERE thread_id IN (SELECT thread_id FROM threads WHERE cwd = ?)",
-			[cwd],
-		);
-		this.db.run(
-			"UPDATE threads SET status = 'pending', updated_at = datetime('now') WHERE cwd = ?",
-			[cwd],
-		);
-
-		const threads = this.queryAll<{ thread_id: string }>(
-			"SELECT thread_id FROM threads WHERE cwd = ?",
-			[cwd],
-		);
-
-		for (const t of threads) {
-			this.db.run(
-				"INSERT INTO jobs (id, phase, thread_id, status) VALUES (?, 'stage1', ?, 'pending')",
-				[randomUUID(), t.thread_id],
-			);
+		// Find matching threads
+		const matchingThreadIds: string[] = [];
+		for (const [threadId, thread] of this.threadsCache) {
+			if (thread.cwd === cwd) {
+				matchingThreadIds.push(threadId);
+			}
 		}
-		this.schedulePersist();
+
+		// Remove stage1 outputs and jobs for these threads
+		for (const threadId of matchingThreadIds) {
+			this.stage1Cache.delete(threadId);
+			try {
+				const filePath = join(this.stage1Dir, `${threadId}.json`);
+				if (existsSync(filePath)) rmSync(filePath);
+			} catch {
+				// File doesn't exist
+			}
+		}
+
+		// Remove existing jobs for these threads
+		const jobsToRemove: string[] = [];
+		for (const [jobId, job] of this.jobsCache) {
+			if (job.thread_id && matchingThreadIds.includes(job.thread_id)) {
+				jobsToRemove.push(jobId);
+			}
+		}
+		for (const jobId of jobsToRemove) {
+			this.jobsCache.delete(jobId);
+			try {
+				const filePath = join(this.jobsDir, `${jobId}.json`);
+				if (existsSync(filePath)) rmSync(filePath);
+			} catch {
+				// File doesn't exist
+			}
+		}
+
+		// Reset threads to pending and create new jobs
+		const now = nowISO();
+		for (const threadId of matchingThreadIds) {
+			const thread = this.threadsCache.get(threadId);
+			if (thread) {
+				this.threadsCache.set(threadId, {
+					...thread,
+					status: "pending",
+					updated_at: now,
+				});
+				this.persistThread(threadId);
+
+				// Create new stage1 job
+				const jobId = randomUUID();
+				const jobData: JobFileData = {
+					id: jobId,
+					phase: "stage1",
+					thread_id: threadId,
+					status: "pending",
+					worker_id: null,
+					ownership_token: null,
+					lease_expires_at: null,
+					error_message: null,
+					created_at: now,
+					updated_at: now,
+				};
+				this.jobsCache.set(jobId, jobData);
+				this.persistJob(jobId);
+			}
+		}
 	}
 
 	close(): void {
@@ -472,7 +807,6 @@ export class MemoryStorage {
 			clearTimeout(this.persistTimer);
 			this.persistTimer = null;
 		}
-		this.persist();
-		this.db.close();
+		this.persistAll();
 	}
 }

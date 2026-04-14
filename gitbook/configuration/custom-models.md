@@ -122,6 +122,56 @@ For accurate cost tracking with custom models, add the `cost` field (per million
 
 Without this, cost shows $0.00 — which is the expected default for custom models.
 
+## Automatic Model Discovery
+
+GSD automatically discovers models from providers that support discovery (OpenAI, OpenRouter, Google, Ollama, and compatible proxies). When a provider is configured with `baseUrl`, GSD calls `/v1/models` to fetch available models with full metadata:
+
+- **Context window** (`context_length`)
+- **Max output tokens** (`top_provider.max_completion_tokens`)
+- **Pricing** (`pricing.prompt`, `pricing.completion`, `pricing.prompt_cache_hit`)
+- **Display name** (`name` — shown in UI instead of model ID)
+
+### OpenAI-Compatible Proxies
+
+Custom OpenAI-compatible proxies (like New API, LiteLLM, or custom routers) that return enriched metadata in their `/v1/models` endpoint are automatically discovered. The enriched format includes:
+
+```json
+{
+  "data": [
+    {
+      "id": "deepseek-chat",
+      "name": "DeepSeek V3.2",
+      "context_length": 131072,
+      "top_provider": { "max_completion_tokens": 8192 },
+      "pricing": {
+        "prompt": "0.00000028",
+        "completion": "0.00000042",
+        "prompt_cache_hit": "0.000000028"
+      }
+    }
+  ],
+  "object": "list"
+}
+```
+
+Discovered models are merged into the registry automatically — no manual `models` array needed in `models.json`. To add a custom provider with auto-discovery:
+
+```json
+{
+  "providers": {
+    "my-router": {
+      "baseUrl": "https://my-proxy.example.com/v1",
+      "apiKey": "MY_API_KEY",
+      "api": "openai-completions",
+      "authHeader": true,
+      "models": []
+    }
+  }
+}
+```
+
+With `"models": []`, GSD uses automatic discovery from the provider's `/v1/models` endpoint. If you define models in the array, those are used as fallbacks and merged with discovered models.
+
 ## Community Extensions
 
 For providers not built into GSD, community extensions add full provider support:

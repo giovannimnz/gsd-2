@@ -229,6 +229,26 @@ Context window usage percentage at which auto mode pauses:
 context_pause_threshold: 80   # pause at 80%
 ```
 
+### `storage_backend`
+
+Storage backend for GSD state (milestones, slices, tasks, decisions):
+
+| Value | Description |
+|-------|-------------|
+| `sqlite` | SQLite database (default). Full-featured with all query capabilities. |
+| `markdown` | File-based storage in `.gsd/storage/`. Portable, no DB dependency. |
+
+```yaml
+storage_backend: sqlite
+```
+
+**Commands:**
+- `/gsd storage` — Show current backend status
+- `/gsd storage switch <backend>` — Switch backend
+- `/gsd storage migrate-to-markdown` — Migrate SQLite to Markdown files
+- `/gsd storage migrate-to-sqlite` — Migrate Markdown files to SQLite
+- `/gsd storage health` — Check storage health
+
 ### `show_token_cost`
 
 Show per-prompt and cumulative session token cost in the footer:

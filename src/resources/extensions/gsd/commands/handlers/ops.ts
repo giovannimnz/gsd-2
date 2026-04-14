@@ -222,7 +222,7 @@ Examples:
     return true;
   }
   if (trimmed === "storage" || trimmed.startsWith("storage ")) {
-    const { handleStorage } = await import("../../commands/storage.js");
+    const { handleStorage } = await import("../../commands-storage.js");
     await handleStorage(trimmed.replace(/^storage\s*/, "").trim(), ctx);
     return true;
   }

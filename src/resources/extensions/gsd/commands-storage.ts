@@ -12,7 +12,7 @@
  */
 
 import type { ExtensionCommandContext } from "@gsd/pi-coding-agent";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { gsdRoot } from "./paths.js";
 import { logWarning } from "./workflow-logger.js";
@@ -54,8 +54,6 @@ function countFiles(dir: string): number {
  * Read storage_backend from PREFERENCES.md.
  */
 function readStorageBackendConfig(basePath: string): string {
-  const { existsSync, readFileSync } = require("node:fs");
-
   // Check project-level first
   const projectPrefs = join(basePath, ".gsd", "PREFERENCES.md");
   if (existsSync(projectPrefs)) {
@@ -82,7 +80,6 @@ function readStorageBackendConfig(basePath: string): string {
  * Update storage_backend in project PREFERENCES.md.
  */
 function updateStorageBackendConfig(basePath: string, backend: "sqlite" | "markdown"): void {
-  const { existsSync, readFileSync, writeFileSync, mkdirSync } = require("node:fs");
   const prefsPath = join(basePath, ".gsd", "PREFERENCES.md");
 
   // Ensure .gsd directory exists

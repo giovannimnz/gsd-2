@@ -520,6 +520,39 @@ github:
 - `/github-sync bootstrap` — initial setup and sync
 - `/github-sync status` — show sync mapping counts
 
+### `storage_backend`
+
+Select the storage backend for GSD state (milestones, slices, tasks, decisions, requirements).
+
+```yaml
+# Storage backend for GSD state
+# sqlite: uses SQLite (default, full-featured)
+# markdown: uses plain .md files (portable, no DB dependency)
+storage_backend: sqlite
+```
+
+| Value | Description |
+|-------|-------------|
+| `sqlite` | SQLite database (default). Full-featured with all query capabilities. |
+| `markdown` | File-based storage using `.gsd/storage/` directory with JSON files. Portable, no database dependency. |
+
+**Default:** `sqlite`
+
+#### `/gsd storage` Commands
+
+| Command | Description |
+|---------|-------------|
+| `/gsd storage` | Show current backend status and available options |
+| `/gsd storage switch <backend>` | Switch storage backend (`sqlite` or `markdown`) |
+| `/gsd storage migrate-to-markdown` | Export all data from SQLite to Markdown files |
+| `/gsd storage migrate-to-sqlite` | Import all data from Markdown files to SQLite |
+| `/gsd storage health` | Check storage health and integrity |
+
+**Migration behavior:**
+- Both migration commands create a timestamped backup before modifying data
+- Round-trip consistency is verified after migration
+- Migration stats show entity counts transferred and any errors
+
 ### `notifications`
 
 Control what notifications GSD sends during auto mode:

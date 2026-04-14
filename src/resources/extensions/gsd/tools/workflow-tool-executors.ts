@@ -1,4 +1,4 @@
-import { ensureDbOpen } from "../bootstrap/dynamic-tools.js";
+import { ensureDbOpen, isStorageAvailable } from "../bootstrap/dynamic-tools.js";
 import { sanitizeCompleteMilestoneParams } from "../bootstrap/sanitize-complete-milestone.js";
 import { loadWriteGateSnapshot, shouldBlockContextArtifactSaveInSnapshot } from "../bootstrap/write-gate.js";
 import { GATE_REGISTRY } from "../gate-registry.js";
@@ -19,6 +19,9 @@ import { handleReassessRoadmap } from "./reassess-roadmap.js";
 import type { ValidateMilestoneParams } from "./validate-milestone.js";
 import { handleValidateMilestone } from "./validate-milestone.js";
 import { logError, logWarning } from "../workflow-logger.js";
+
+const STORAGE_UNAVAILABLE_MSG =
+  "Storage is not available. Configure storage_backend in PREFERENCES.md (sqlite or markdown) and retry.";
 
 export const SUPPORTED_SUMMARY_ARTIFACT_TYPES = ["SUMMARY", "RESEARCH", "CONTEXT", "ASSESSMENT", "CONTEXT-DRAFT"] as const;
 
@@ -48,11 +51,12 @@ export async function executeSummarySave(
 ): Promise<ToolExecutionResult> {
   const dbAvailable = await ensureDbOpen(basePath);
   if (!dbAvailable) {
+    logWarning("tool", "executeSummarySave: storage unavailable");
     return {
-      content: [{ type: "text", text: "Error: GSD database is not available. Cannot save artifact." }],
-      details: { operation: "save_summary", error: "db_unavailable" },
-    isError: true,
-      };
+      content: [{ type: "text", text: `Warning: Storage is not available. ${STORAGE_UNAVAILABLE_MSG} Artifact not saved.` }],
+      details: { operation: "save_summary", error: "storage_unavailable" },
+      isError: true,
+    };
   }
   if (!isSupportedSummaryArtifactType(params.artifact_type)) {
     return {
@@ -158,11 +162,12 @@ export async function executeTaskComplete(
 ): Promise<ToolExecutionResult> {
   const dbAvailable = await ensureDbOpen(basePath);
   if (!dbAvailable) {
+    logWarning("tool", "executeTaskComplete: storage unavailable");
     return {
-      content: [{ type: "text", text: "Error: GSD database is not available. Cannot complete task." }],
-      details: { operation: "complete_task", error: "db_unavailable" },
-    isError: true,
-      };
+      content: [{ type: "text", text: `Warning: Storage is not available. ${STORAGE_UNAVAILABLE_MSG} Task not completed.` }],
+      details: { operation: "complete_task", error: "storage_unavailable" },
+      isError: true,
+    };
   }
   try {
     const coerced = { ...params };
@@ -205,11 +210,12 @@ export async function executeSliceComplete(
 ): Promise<ToolExecutionResult> {
   const dbAvailable = await ensureDbOpen(basePath);
   if (!dbAvailable) {
+    logWarning("tool", "executeSliceComplete: storage unavailable");
     return {
-      content: [{ type: "text", text: "Error: GSD database is not available. Cannot complete slice." }],
-      details: { operation: "complete_slice", error: "db_unavailable" },
-    isError: true,
-      };
+      content: [{ type: "text", text: `Warning: Storage is not available. ${STORAGE_UNAVAILABLE_MSG} Slice not completed.` }],
+      details: { operation: "complete_slice", error: "storage_unavailable" },
+      isError: true,
+    };
   }
   try {
     const splitPair = (s: string): [string, string] => {
@@ -289,11 +295,12 @@ export async function executeCompleteMilestone(
 ): Promise<ToolExecutionResult> {
   const dbAvailable = await ensureDbOpen(basePath);
   if (!dbAvailable) {
+    logWarning("tool", "executeCompleteMilestone: storage unavailable");
     return {
-      content: [{ type: "text", text: "Error: GSD database is not available. Cannot complete milestone." }],
-      details: { operation: "complete_milestone", error: "db_unavailable" },
-    isError: true,
-      };
+      content: [{ type: "text", text: `Warning: Storage is not available. ${STORAGE_UNAVAILABLE_MSG} Milestone not completed.` }],
+      details: { operation: "complete_milestone", error: "storage_unavailable" },
+      isError: true,
+    };
   }
   try {
     const sanitized = sanitizeCompleteMilestoneParams(params);
@@ -330,11 +337,12 @@ export async function executeValidateMilestone(
 ): Promise<ToolExecutionResult> {
   const dbAvailable = await ensureDbOpen(basePath);
   if (!dbAvailable) {
+    logWarning("tool", "executeValidateMilestone: storage unavailable");
     return {
-      content: [{ type: "text", text: "Error: GSD database is not available. Cannot validate milestone." }],
-      details: { operation: "validate_milestone", error: "db_unavailable" },
-    isError: true,
-      };
+      content: [{ type: "text", text: `Warning: Storage is not available. ${STORAGE_UNAVAILABLE_MSG} Milestone not validated.` }],
+      details: { operation: "validate_milestone", error: "storage_unavailable" },
+      isError: true,
+    };
   }
   try {
     const result = await handleValidateMilestone(params, basePath);
@@ -371,11 +379,12 @@ export async function executeReassessRoadmap(
 ): Promise<ToolExecutionResult> {
   const dbAvailable = await ensureDbOpen(basePath);
   if (!dbAvailable) {
+    logWarning("tool", "executeReassessRoadmap: storage unavailable");
     return {
-      content: [{ type: "text", text: "Error: GSD database is not available. Cannot reassess roadmap." }],
-      details: { operation: "reassess_roadmap", error: "db_unavailable" },
-    isError: true,
-      };
+      content: [{ type: "text", text: `Warning: Storage is not available. ${STORAGE_UNAVAILABLE_MSG} Roadmap not reassessed.` }],
+      details: { operation: "reassess_roadmap", error: "storage_unavailable" },
+      isError: true,
+    };
   }
   try {
     const result = await handleReassessRoadmap(params, basePath);
@@ -413,11 +422,12 @@ export async function executeSaveGateResult(
 ): Promise<ToolExecutionResult> {
   const dbAvailable = await ensureDbOpen(basePath);
   if (!dbAvailable) {
+    logWarning("tool", "executeSaveGateResult: storage unavailable");
     return {
-      content: [{ type: "text", text: "Error: GSD database is not available." }],
-      details: { operation: "save_gate_result", error: "db_unavailable" },
-    isError: true,
-      };
+      content: [{ type: "text", text: `Warning: Storage is not available. ${STORAGE_UNAVAILABLE_MSG} Gate result not saved.` }],
+      details: { operation: "save_gate_result", error: "storage_unavailable" },
+      isError: true,
+    };
   }
 
   // Source of truth: gate-registry.ts. Every declared GateId is accepted,
@@ -476,11 +486,12 @@ export async function executePlanMilestone(
 ): Promise<ToolExecutionResult> {
   const dbAvailable = await ensureDbOpen(basePath);
   if (!dbAvailable) {
+    logWarning("tool", "executePlanMilestone: storage unavailable");
     return {
-      content: [{ type: "text", text: "Error: GSD database is not available. Cannot plan milestone." }],
-      details: { operation: "plan_milestone", error: "db_unavailable" },
-    isError: true,
-      };
+      content: [{ type: "text", text: `Warning: Storage is not available. ${STORAGE_UNAVAILABLE_MSG} Milestone not planned.` }],
+      details: { operation: "plan_milestone", error: "storage_unavailable" },
+      isError: true,
+    };
   }
   try {
     const result = await handlePlanMilestone(params, basePath);
@@ -516,11 +527,12 @@ export async function executePlanSlice(
 ): Promise<ToolExecutionResult> {
   const dbAvailable = await ensureDbOpen(basePath);
   if (!dbAvailable) {
+    logWarning("tool", "executePlanSlice: storage unavailable");
     return {
-      content: [{ type: "text", text: "Error: GSD database is not available. Cannot plan slice." }],
-      details: { operation: "plan_slice", error: "db_unavailable" },
-    isError: true,
-      };
+      content: [{ type: "text", text: `Warning: Storage is not available. ${STORAGE_UNAVAILABLE_MSG} Slice not planned.` }],
+      details: { operation: "plan_slice", error: "storage_unavailable" },
+      isError: true,
+    };
   }
   try {
     const result = await handlePlanSlice(params, basePath);
@@ -558,11 +570,12 @@ export async function executeReplanSlice(
 ): Promise<ToolExecutionResult> {
   const dbAvailable = await ensureDbOpen(basePath);
   if (!dbAvailable) {
+    logWarning("tool", "executeReplanSlice: storage unavailable");
     return {
-      content: [{ type: "text", text: "Error: GSD database is not available. Cannot replan slice." }],
-      details: { operation: "replan_slice", error: "db_unavailable" },
-    isError: true,
-      };
+      content: [{ type: "text", text: `Warning: Storage is not available. ${STORAGE_UNAVAILABLE_MSG} Slice not replanned.` }],
+      details: { operation: "replan_slice", error: "storage_unavailable" },
+      isError: true,
+    };
   }
   try {
     const result = await handleReplanSlice(params, basePath);
@@ -605,10 +618,11 @@ export async function executeMilestoneStatus(
   try {
     const dbAvailable = await ensureDbOpen(basePath);
     if (!dbAvailable) {
+      logWarning("tool", "executeMilestoneStatus: storage unavailable");
       return {
-        content: [{ type: "text", text: "Error: GSD database is not available." }],
-        details: { operation: "milestone_status", error: "db_unavailable" },
-      isError: true,
+        content: [{ type: "text", text: `Warning: Storage is not available. ${STORAGE_UNAVAILABLE_MSG}` }],
+        details: { operation: "milestone_status", error: "storage_unavailable" },
+        isError: true,
       };
     }
 

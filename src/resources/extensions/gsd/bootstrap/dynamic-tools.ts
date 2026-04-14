@@ -6,6 +6,12 @@ import { createBashTool, createEditTool, createReadTool, createWriteTool } from 
 
 import { DEFAULT_BASH_TIMEOUT_SECS } from "../constants.js";
 import { setLogBasePath, logWarning } from "../workflow-logger.js";
+import type { StorageBackend } from "../storage-backend.js";
+
+/**
+ * Global storage backend reference (set by ensureDbOpen).
+ */
+let _storageBackend: StorageBackend | null = null;
 
 /**
  * Resolve the correct DB path for the current working directory.
@@ -89,7 +95,10 @@ export async function ensureDbOpen(basePath: string = process.cwd()): Promise<bo
     // Open existing DB file (may be at project root for worktrees)
     if (existsSync(dbPath)) {
       const opened = backend.open(dbPath);
-      if (opened) setLogBasePath(projectRoot);
+      if (opened) {
+        setLogBasePath(projectRoot);
+        _storageBackend = backend;
+      }
       return opened;
     }
 
@@ -102,6 +111,7 @@ export async function ensureDbOpen(basePath: string = process.cwd()): Promise<bo
         const opened = backend.open(dbPath);
         if (opened) {
           setLogBasePath(projectRoot);
+          _storageBackend = backend;
           try {
             const { migrateFromMarkdown } = await import("../md-importer.js");
             migrateFromMarkdown(basePath);
@@ -114,7 +124,10 @@ export async function ensureDbOpen(basePath: string = process.cwd()): Promise<bo
 
       // .gsd/ exists but has no Markdown content (fresh project) — create empty DB
       const opened = backend.open(dbPath);
-      if (opened) setLogBasePath(projectRoot);
+      if (opened) {
+        setLogBasePath(projectRoot);
+        _storageBackend = backend;
+      }
       return opened;
     }
 
@@ -124,6 +137,21 @@ export async function ensureDbOpen(basePath: string = process.cwd()): Promise<bo
     logWarning("bootstrap", `ensureDbOpen failed: ${(err as Error).message ?? String(err)}`);
     return false;
   }
+}
+
+/**
+ * Check if storage backend is currently available and initialized.
+ * Works for both SQLite and Markdown backends.
+ */
+export function isStorageAvailable(): boolean {
+  return _storageBackend !== null && _storageBackend.isOpen();
+}
+
+/**
+ * Get the current storage backend instance (or null if not initialized).
+ */
+export function getStorageBackend(): StorageBackend | null {
+  return _storageBackend;
 }
 
 export function registerDynamicTools(pi: ExtensionAPI): void {

@@ -526,6 +526,7 @@ auto_report: true
 | `skill_discovery`      | `auto` / `suggest` / `off` — how GSD finds and applies skills                                         |
 | `auto_supervisor.*`    | Timeout thresholds for auto mode supervision                                                          |
 | `budget_ceiling`       | USD ceiling — auto mode pauses when reached                                                           |
+| `storage_backend`      | `sqlite` (default) or `markdown` — storage backend for GSD state                                      |
 | `uat_dispatch`         | Enable automatic UAT runs after slice completion                                                      |
 | `always_use_skills`    | Skills to always load when relevant                                                                   |
 | `skill_rules`          | Situational rules for skill routing                                                                   |

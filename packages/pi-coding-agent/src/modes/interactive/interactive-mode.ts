@@ -3572,6 +3572,13 @@ export class InteractiveMode {
 	}
 
 	private async showLoginDialog(providerId: string): Promise<void> {
+		// Check if provider uses API key auth (not OAuth)
+		const authMode = this.session.modelRegistry.getProviderAuthMode(providerId);
+		if (authMode === "apiKey") {
+			await this.showApiKeyDialog(providerId);
+			return;
+		}
+
 		const providerInfo = this.session.modelRegistry.authStorage.getOAuthProviders().find((p) => p.id === providerId);
 		const providerName = providerInfo?.name || providerId;
 
@@ -3659,6 +3666,97 @@ export class InteractiveMode {
 			const errorMsg = error instanceof Error ? error.message : String(error);
 			if (errorMsg !== "Login cancelled" && !errorMsg.includes("Superseded") && !errorMsg.includes("disposed")) {
 				this.showError(`Failed to login to ${providerName}: ${errorMsg}`);
+			}
+		}
+	}
+
+	/**
+	 * Show a dialog for entering an API key (for apiKey-auth providers).
+	 * Used when provider has authMode: "apiKey" instead of OAuth.
+	 */
+	private async showApiKeyDialog(providerId: string): Promise<void> {
+		const providerConfig = this.session.modelRegistry.getProviderConfig(providerId);
+		const providerName = providerId; // Provider ID is used as display name
+		const baseUrl = providerConfig?.baseUrl || "";
+
+		// Create a simple API key input dialog
+		const dialog = new LoginDialogComponent(this.ui, providerId, (_success, _message) => {
+			// Completion handled below
+		});
+
+		// Show dialog in editor container
+		this.editorContainer.clear();
+		this.editorContainer.addChild(dialog);
+		this.ui.setFocus(dialog);
+		this.ui.requestRender();
+
+		// Restore editor helper
+		const restoreEditor = () => {
+			dialog.dispose();
+			this.editorContainer.clear();
+			this.editorContainer.addChild(this.editor);
+			this.ui.setFocus(this.editor);
+			this.ui.requestRender();
+		};
+
+		try {
+			// Show prompt for API key
+			const apiKey = await dialog.showPrompt("Enter API Key:", "sk-...");
+
+			if (!apiKey || apiKey.trim() === "") {
+				restoreEditor();
+				this.showStatus("API key entry cancelled.");
+				return;
+			}
+
+			// Validate the API key by making a test request to /v1/models
+			dialog.showProgress("Validating API key...");
+
+			const testUrl = `${baseUrl}/v1/models`;
+			const headers: Record<string, string> = { Authorization: `Bearer ${apiKey.trim()}` };
+			if (providerConfig && (providerConfig as any).authHeader !== false) {
+				headers["Authorization"] = `Bearer ${apiKey.trim()}`;
+			}
+
+			const response = await fetch(testUrl, { headers, signal: AbortSignal.timeout(10000) });
+
+			if (!response.ok) {
+				throw new Error(`API returned ${response.status}: ${response.statusText}`);
+			}
+
+			const data = await response.json() as { data?: unknown[] };
+			if (!data.data) {
+				throw new Error("Invalid response from /v1/models endpoint");
+			}
+
+			// Store the API key
+			this.session.modelRegistry.authStorage.set(providerId, { type: "api_key", key: apiKey.trim() });
+
+			// Trigger model discovery to fetch available models
+			dialog.showProgress("Discovering models...");
+			try {
+				const results = await this.session.modelRegistry.discoverModels([providerId]);
+				const result = results[0];
+				if (result?.error) {
+					this.showWarning(`API key saved, but model discovery failed: ${result.error}`);
+				} else {
+					this.showStatus(`${result.models.length} models discovered from ${providerName}. API key saved.`);
+				}
+			} catch {
+				this.showStatus(`API key saved. Model discovery will retry on next /provider refresh.`);
+			}
+
+			restoreEditor();
+			this.session.modelRegistry.refresh();
+			await this.updateAvailableProviderCount();
+
+		} catch (error: unknown) {
+			restoreEditor();
+			const errorMsg = error instanceof Error ? error.message : String(error);
+			if (errorMsg !== "Login cancelled" && !errorMsg.includes("disposed")) {
+				this.showError(`Failed to save API key for ${providerName}: ${errorMsg}`);
+			} else {
+				this.showStatus("API key entry cancelled.");
 			}
 		}
 	}

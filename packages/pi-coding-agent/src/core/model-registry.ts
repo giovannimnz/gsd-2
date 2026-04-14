@@ -550,6 +550,14 @@ export class ModelRegistry {
 	}
 
 	/**
+	 * Get the registered provider config (includes baseUrl, apiKey, authMode, etc.).
+	 * Returns undefined if provider is not a custom registered provider.
+	 */
+	getProviderConfig(provider: string): ProviderConfigInput | undefined {
+		return this.registeredProviders.get(provider);
+	}
+
+	/**
 	 * Whether a provider can be used for requests/fallback without hard auth gating.
 	 */
 	isProviderRequestReady(provider: string): boolean {

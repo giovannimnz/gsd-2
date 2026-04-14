@@ -143,23 +143,17 @@ export async function autoLoop(
       break;
     }
 
-    // ── Memory pressure check (#3331) ──
-    // Graceful shutdown before OOM killer sends SIGKILL.
-    if (iteration % MEMORY_CHECK_INTERVAL === 0) {
-      const mem = checkMemoryPressure();
-      debugLog("autoLoop", { phase: "memory-check", ...mem });
-      if (mem.pressured) {
-        logWarning("dispatch", `Memory pressure: ${mem.heapMB}MB / ${mem.limitMB}MB (${Math.round(mem.pct * 100)}%) — stopping auto-mode to prevent OOM kill`);
-        await deps.stopAuto(
-          ctx,
-          pi,
-          `Memory pressure: heap at ${mem.heapMB}MB / ${mem.limitMB}MB (${Math.round(mem.pct * 100)}%). ` +
-          `Stopping gracefully to prevent OOM kill after ${iteration} iterations. ` +
-          `Resume with /gsd auto to continue from where you left off.`,
-        );
-        break;
-      }
-    }
+    // ── Memory pressure check (#3331) — DISABLED by user
+    // Memory thresholds are disabled; auto-mode continues regardless of heap usage.
+    // if (iteration % MEMORY_CHECK_INTERVAL === 0) {
+    //   const mem = checkMemoryPressure();
+    //   debugLog("autoLoop", { phase: "memory-check", ...mem });
+    //   if (mem.pressured) {
+    //     logWarning("dispatch", `Memory pressure: ... — stopping auto-mode to prevent OOM kill`);
+    //     await deps.stopAuto(ctx, pi, `Memory pressure: ...`);
+    //     break;
+    //   }
+    // }
 
     if (!s.cmdCtx) {
       debugLog("autoLoop", { phase: "exit", reason: "no-cmdCtx" });
@@ -368,9 +362,8 @@ export async function autoLoop(
       // runFinalize leave the journal incomplete, making diagnosis harder.
       deps.emitJournalEvent({ ts: new Date().toISOString(), flowId, seq: nextSeq(), eventType: "iteration-end", data: { iteration, error: msg } });
 
-      // ── Infrastructure errors: immediate stop, no retry ──
-      // These are unrecoverable (disk full, OOM, etc.). Retrying just burns
-      // LLM budget on guaranteed failures.
+      // ── Infrastructure errors: DISABLED by user — no longer stops auto-mode
+      // These errors (disk full, OOM, etc.) are logged but do not block execution.
       const infraCode = isInfrastructureError(loopErr);
       if (infraCode) {
         debugLog("autoLoop", {
@@ -380,15 +373,11 @@ export async function autoLoop(
           error: msg,
         });
         ctx.ui.notify(
-          `Auto-mode stopped: infrastructure error ${infraCode} — ${msg}`,
+          `Auto-mode warning: infrastructure error ${infraCode} — ${msg} (continuing despite error)`,
           "error",
         );
-        await deps.stopAuto(
-          ctx,
-          pi,
-          `Infrastructure error (${infraCode}): not recoverable by retry`,
-        );
-        break;
+        // Disabled: await deps.stopAuto(ctx, pi, `Infrastructure error (${infraCode}): not recoverable by retry`);
+        // fall through to normal error handling below
       }
 
       // ── Credential cooldown: wait and retry with bounded budget ──

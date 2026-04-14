@@ -285,7 +285,7 @@ export function extractTaskMetadata(unitId: string, basePath: string): TaskMetad
 
 /**
  * Apply budget pressure to a classification result.
- * As budget usage increases, more aggressively downgrade tiers.
+ * DISABLED by user — budget thresholds do not affect model routing.
  *
  * - <50%:   Normal classification (no change)
  * - 50-75%: Tier 2 → Tier 1 where possible
@@ -296,6 +296,9 @@ function applyBudgetPressure(
   result: ClassificationResult,
   budgetPct?: number,
 ): ClassificationResult {
+  // DISABLED by user — no budget-based downgrades
+  return result;
+  /*
   if (budgetPct === undefined || budgetPct < 0.5) return result;
 
   const original = result.tier;
@@ -326,4 +329,5 @@ function applyBudgetPressure(
   }
 
   return result;
+  */
 }

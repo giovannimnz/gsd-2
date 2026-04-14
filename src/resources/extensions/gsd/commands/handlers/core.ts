@@ -104,6 +104,7 @@ export function showHelp(ctx: ExtensionCommandContext, args = ""): void {
     "  /gsd migrate        Migrate .planning/ (v1) to .gsd/ (v2) format",
     "  /gsd remote         Control remote auto-mode  [slack|discord|status|disconnect]",
     "  /gsd inspect        Show SQLite DB diagnostics (schema, row counts, recent entries)",
+    "  /gsd storage        Manage storage backend (sqlite|markdown)",
     "  /gsd update         Update GSD to the latest version via npm",
   ];
   const full = ["full", "--full", "all"].includes(args.trim().toLowerCase());

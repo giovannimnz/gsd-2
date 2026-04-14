@@ -15,7 +15,7 @@ export interface GsdCommandDefinition {
 type CompletionMap = Record<string, readonly GsdCommandDefinition[]>;
 
 export const GSD_COMMAND_DESCRIPTION =
-  "GSD — Get Shit Done: /gsd help|start|templates|next|auto|stop|pause|status|widget|visualize|queue|quick|discuss|capture|triage|dispatch|history|undo|undo-task|reset-slice|rate|skip|export|cleanup|model|mode|prefs|config|keys|hooks|run-hook|skill-health|doctor|logs|forensics|changelog|migrate|remote|steer|knowledge|new-milestone|parallel|cmux|park|unpark|init|setup|inspect|extensions|update|fast|mcp|rethink|codebase|notifications";
+  "GSD — Get Shit Done: /gsd help|start|templates|next|auto|stop|pause|status|widget|visualize|queue|quick|discuss|capture|triage|dispatch|history|undo|undo-task|reset-slice|rate|skip|export|cleanup|model|mode|prefs|config|keys|hooks|run-hook|skill-health|doctor|logs|forensics|changelog|migrate|remote|steer|knowledge|new-milestone|parallel|cmux|park|unpark|init|setup|inspect|extensions|update|fast|mcp|rethink|codebase|notifications|storage";
 
 export const TOP_LEVEL_SUBCOMMANDS: readonly GsdCommandDefinition[] = [
   { cmd: "help", desc: "Categorized command reference with descriptions" },
@@ -75,6 +75,7 @@ export const TOP_LEVEL_SUBCOMMANDS: readonly GsdCommandDefinition[] = [
   { cmd: "rethink", desc: "Conversational project reorganization — reorder, park, discard, add milestones" },
   { cmd: "workflow", desc: "Custom workflow lifecycle (new, run, list, validate, pause, resume)" },
   { cmd: "codebase", desc: "Generate, refresh, and inspect the codebase map cache (.gsd/CODEBASE.md)" },
+  { cmd: "storage", desc: "Manage storage backend (sqlite/markdown) and migrate data" },
 ];
 
 const NESTED_COMPLETIONS: CompletionMap = {
@@ -244,6 +245,12 @@ const NESTED_COMPLETIONS: CompletionMap = {
     { cmd: "update --collapse-threshold", desc: "Update with custom collapse threshold" },
     { cmd: "stats", desc: "Show file count, description coverage, and generation time" },
     { cmd: "help", desc: "Show usage and available subcommands" },
+  ],
+  storage: [
+    { cmd: "switch", desc: "Switch storage backend (sqlite|markdown)" },
+    { cmd: "migrate-to-markdown", desc: "Migrate data from SQLite to Markdown files" },
+    { cmd: "migrate-to-sqlite", desc: "Migrate data from Markdown files to SQLite" },
+    { cmd: "health", desc: "Check storage health and integrity" },
   ],
 };
 

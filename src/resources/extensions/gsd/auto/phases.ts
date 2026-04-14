@@ -845,111 +845,20 @@ export async function runGuards(
     return { action: "break", reason: "stop-guard-error" };
   }
 
-  // Budget ceiling guard
-  const budgetCeiling = prefs?.budget_ceiling;
-  if (budgetCeiling !== undefined && budgetCeiling > 0) {
-    const currentLedger = deps.getLedger() as { units: unknown } | null;
-    // In parallel worker mode, only count cost from the current auto-mode session
-    // to avoid hitting the ceiling due to historical project-wide spend (#2184).
-    let costUnits = currentLedger?.units;
-    if (process.env.GSD_PARALLEL_WORKER && s.autoStartTime && Array.isArray(costUnits)) {
-      const sessionStartISO = new Date(s.autoStartTime).toISOString();
-      costUnits = costUnits.filter(
-        (u: { startedAt?: string }) => u.startedAt != null && u.startedAt >= sessionStartISO,
-      );
-    }
-    const totalCost = costUnits
-      ? deps.getProjectTotals(costUnits).cost
-      : 0;
-    const budgetPct = totalCost / budgetCeiling;
-    const budgetAlertLevel = deps.getBudgetAlertLevel(budgetPct);
-    const newBudgetAlertLevel = deps.getNewBudgetAlertLevel(
-      s.lastBudgetAlertLevel,
-      budgetPct,
-    );
-    const enforcement = prefs?.budget_enforcement ?? "pause";
-    const budgetEnforcementAction = deps.getBudgetEnforcementAction(
-      enforcement,
-      budgetPct,
-    );
+  // Budget ceiling guard — DISABLED by user
+  // Budget thresholds are disabled; auto-mode continues regardless of budget usage.
+  // const budgetCeiling = prefs?.budget_ceiling;
+  // if (budgetCeiling !== undefined && budgetCeiling > 0) {
+  //   ... (entire budget guard logic disabled)
+  // }
+  s.lastBudgetAlertLevel = 0;
 
-    // Data-driven threshold check — loop descending, fire first match
-    const threshold = BUDGET_THRESHOLDS.find(
-      (t) => newBudgetAlertLevel >= t.pct,
-    );
-    if (threshold) {
-      s.lastBudgetAlertLevel =
-        newBudgetAlertLevel as AutoSession["lastBudgetAlertLevel"];
-
-      if (threshold.pct === 100 && budgetEnforcementAction !== "none") {
-        // 100% — special enforcement logic (halt/pause/warn)
-        const msg = `Budget ceiling ${deps.formatCost(budgetCeiling)} reached (spent ${deps.formatCost(totalCost)}).`;
-        if (budgetEnforcementAction === "halt") {
-          deps.sendDesktopNotification("GSD", msg, "error", "budget", basename(s.originalBasePath || s.basePath));
-          await deps.stopAuto(ctx, pi, "Budget ceiling reached");
-          debugLog("autoLoop", { phase: "exit", reason: "budget-halt" });
-          return { action: "break", reason: "budget-halt" };
-        }
-        if (budgetEnforcementAction === "pause") {
-          ctx.ui.notify(
-            `${msg} Pausing auto-mode — /gsd auto to override and continue.`,
-            "warning",
-          );
-          deps.sendDesktopNotification("GSD", msg, "warning", "budget", basename(s.originalBasePath || s.basePath));
-          deps.logCmuxEvent(prefs, msg, "warning");
-          await deps.pauseAuto(ctx, pi);
-          debugLog("autoLoop", { phase: "exit", reason: "budget-pause" });
-          return { action: "break", reason: "budget-pause" };
-        }
-        ctx.ui.notify(`${msg} Continuing (enforcement: warn).`, "warning");
-        deps.sendDesktopNotification("GSD", msg, "warning", "budget", basename(s.originalBasePath || s.basePath));
-        deps.logCmuxEvent(prefs, msg, "warning");
-      } else if (threshold.pct < 100) {
-        // Sub-100% — simple notification
-        const msg = `${threshold.label}: ${deps.formatCost(totalCost)} / ${deps.formatCost(budgetCeiling)}`;
-        ctx.ui.notify(msg, threshold.notifyLevel);
-        deps.sendDesktopNotification(
-          "GSD",
-          msg,
-          threshold.notifyLevel,
-          "budget",
-          basename(s.originalBasePath || s.basePath),
-        );
-        deps.logCmuxEvent(prefs, msg, threshold.cmuxLevel);
-      }
-    } else if (budgetAlertLevel === 0) {
-      s.lastBudgetAlertLevel = 0;
-    }
-  } else {
-    s.lastBudgetAlertLevel = 0;
-  }
-
-  // Context window guard
-  const contextThreshold = prefs?.context_pause_threshold ?? 0;
-  if (contextThreshold > 0 && s.cmdCtx) {
-    const contextUsage = s.cmdCtx.getContextUsage();
-    if (
-      contextUsage &&
-      contextUsage.percent !== null &&
-      contextUsage.percent >= contextThreshold
-    ) {
-      const msg = `Context window at ${contextUsage.percent}% (threshold: ${contextThreshold}%). Pausing to prevent truncated output.`;
-      ctx.ui.notify(
-        `${msg} Run /gsd auto to continue (will start fresh session).`,
-        "warning",
-      );
-      deps.sendDesktopNotification(
-        "GSD",
-        `Context ${contextUsage.percent}% — paused`,
-        "warning",
-        "attention",
-        basename(s.originalBasePath || s.basePath),
-      );
-      await deps.pauseAuto(ctx, pi);
-      debugLog("autoLoop", { phase: "exit", reason: "context-window" });
-      return { action: "break", reason: "context-window" };
-    }
-  }
+  // Context window guard — DISABLED by user
+  // Context thresholds are disabled; auto-mode continues regardless of context usage.
+  // const contextThreshold = prefs?.context_pause_threshold ?? 0;
+  // if (contextThreshold > 0 && s.cmdCtx) {
+  //   ... (entire context guard logic disabled)
+  // }
 
   // Secrets re-check gate
   try {

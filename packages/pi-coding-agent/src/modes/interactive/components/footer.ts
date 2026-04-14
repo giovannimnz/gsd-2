@@ -166,7 +166,8 @@ export class FooterComponent implements Component {
 		let statsLeft = groups.join(sep);
 
 		// Add model name on the right side, plus thinking level if model supports it
-		const modelName = displayModel?.id || "no-model";
+		// Prefer display name from endpoint (e.g., "DeepSeek V3.2") over raw ID
+		const modelName = displayModel?.name || displayModel?.id || "no-model";
 
 		let statsLeftWidth = visibleWidth(statsLeft);
 

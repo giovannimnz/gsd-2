@@ -407,6 +407,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			const isSelected = i === this.selectedFlatIndex;
 			const isCurrent = modelsAreEqual(this.currentModel, item.model);
 
+			const displayName = item.model.name || item.id;
 			const ctx = formatTokenCount(item.model.contextWindow);
 			const ctxBadge = theme.fg("muted", `${ctx}`);
 			const providerBadge = theme.fg("muted", `[${providerDisplayName(item.provider)}]`);
@@ -415,9 +416,9 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			let line: string;
 			if (isSelected) {
 				const prefix = theme.fg("accent", "→ ");
-				line = `${prefix}${theme.fg("accent", item.id)} ${ctxBadge} ${providerBadge}${checkmark}`;
+				line = `${prefix}${theme.fg("accent", displayName)} ${ctxBadge} ${providerBadge}${checkmark}`;
 			} else {
-				line = `  ${item.id} ${ctxBadge} ${providerBadge}${checkmark}`;
+				line = `  ${displayName} ${ctxBadge} ${providerBadge}${checkmark}`;
 			}
 
 			this.listContainer.addChild(new Text(line, 0, 0));
@@ -477,15 +478,16 @@ export class ModelSelectorComponent extends Container implements Focusable {
 				const isSelected = i === this.selectedGroupIndex;
 				const isCurrent = modelsAreEqual(this.currentModel, row.item.model);
 
+				const displayName = row.item.model.name || row.item.id;
 				const ctx = formatTokenCount(row.item.model.contextWindow);
 				const ctxBadge = theme.fg("muted", ` ${ctx}`);
 				const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
 
 				let line: string;
 				if (isSelected) {
-					line = `  ${theme.fg("accent", "→")} ${theme.fg("accent", row.item.id)}${ctxBadge}${checkmark}`;
+					line = `  ${theme.fg("accent", "→")} ${theme.fg("accent", displayName)}${ctxBadge}${checkmark}`;
 				} else {
-					line = `    ${row.item.id}${ctxBadge}${checkmark}`;
+					line = `    ${displayName}${ctxBadge}${checkmark}`;
 				}
 
 				this.listContainer.addChild(new Text(line, 0, 0));

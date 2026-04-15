@@ -63,14 +63,28 @@ echo ""
 
 # 7. Build
 echo "🔨 Fazendo build..."
-npm run build 2>&1 | tail -10
+if npm run build 2>&1 | tail -20; then
+    echo ""
+    echo "✅ Build concluído com sucesso!"
+else
+    echo ""
+    echo "❌ Build falhou!"
+    echo "   Verifique os erros acima e tente novamente."
+    exit 1
+fi
 echo ""
 
-# 7b. Corrigir caminho do pm2 start-gsd-web.sh
-PM2_START_SCRIPT="/home/ubuntu/.gsd/pm2/start-gsd-web.sh"
-if [ -f "$PM2_START_SCRIPT" ]; then
-    echo "🔧 Atualizando caminho do pm2 start-gsd-web.sh..."
-    sed -i "s|PACKAGE_ROOT=.*|PACKAGE_ROOT=/home/ubuntu/GitHub/forks/gsd-2|" "$PM2_START_SCRIPT"
+# 7b. Verificar scripts PM2 (usados direto do git clone)
+PM2_DIR="$GSd_DIR/scripts/pm2"
+if [ -d "$PM2_DIR" ]; then
+    echo "🔧 Verificando scripts PM2..."
+    
+    # Tornar script executável
+    chmod +x "$PM2_DIR/start-gsd-web.sh" 2>/dev/null || true
+    
+    echo "  ✅ PM2 usa scripts do git clone (nada copiado para fora)"
+else
+    echo "ℹ️  Scripts PM2 não encontrados"
 fi
 echo ""
 
@@ -94,9 +108,42 @@ else
 fi
 echo ""
 
-# 9. Verificar versão
-NEW_VERSION=$(gsd --version 2>/dev/null || echo "desconhecida")
+# 9. Verificar versão e status final
+echo ""
+echo "🔍 Verificando status..."
+echo ""
+
+# Verificar se gsd está disponível
+if command -v gsd >/dev/null 2>&1; then
+    NEW_VERSION=$(gsd --version 2>/dev/null || echo "desconhecida")
+else
+    NEW_VERSION="não instalado globalmente"
+fi
+
+# Verificar status do PM2
+PM2_STATUS_INFO=""
+if command -v pm2 >/dev/null 2>&1; then
+    if pm2 describe gsd-web >/dev/null 2>&1; then
+        PM2_STATUS=$(pm2 jlist 2>/dev/null | python3 -c "import sys,json; procs=json.load(sys.stdin); gsd=[p for p in procs if p['name']=='gsd-web'][0]; print(gsd['pm2_env']['status'])" 2>/dev/null || echo "unknown")
+        PM2_STATUS_INFO="gsd-web: $PM2_STATUS"
+    else
+        PM2_STATUS_INFO="gsd-web: não configurado"
+    fi
+else
+    PM2_STATUS_INFO="PM2 não instalado"
+fi
+
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  ✅ Atualização concluída!"
-echo "  📌 Versão: $NEW_VERSION"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "📌 Versão: $NEW_VERSION"
+echo "🖥️  PM2: $PM2_STATUS_INFO"
+echo ""
+echo "🌐 Acesse: http://localhost:34000"
+echo ""
+echo "💡 Comandos úteis:"
+echo "   pm2 status           # Ver status do serviço"
+echo "   pm2 logs gsd-web     # Ver logs"
+echo "   npm run update       # Atualizar novamente"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

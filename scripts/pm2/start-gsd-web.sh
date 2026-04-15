@@ -14,8 +14,8 @@ if [ ! -d "$STANDALONE_DIR" ]; then
 fi
 
 export NODE_ENV=production
-export HOSTNAME=127.0.0.1
-export PORT=1027
+export HOSTNAME=localhost
+export PORT=34000
 export GSD_WEB_DAEMON_MODE=1
 export GSD_WEB_PACKAGE_ROOT="$PACKAGE_ROOT"
 export GSD_WEB_ALLOWED_ORIGINS="${GSD_WEB_ALLOWED_ORIGINS:-https://gsd.atius.com.br}"

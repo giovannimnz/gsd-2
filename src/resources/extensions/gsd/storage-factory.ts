@@ -18,8 +18,11 @@ import { MarkdownStorage } from "./storage-markdown.js";
 /**
  * Read storage_backend from PREFERENCES.md.
  * Returns "sqlite" (default) or "markdown".
+ * 
+ * @param basePath Project root path (for reading PREFERENCES.md)
+ * @returns BackendType - "sqlite" (default) or "markdown"
  */
-function readStorageBackend(basePath: string = process.cwd()): BackendType {
+export function readStorageBackend(basePath: string = process.cwd()): BackendType {
   // Check project-level PREFERENCES.md first
   const projectPrefs = join(basePath, ".gsd", "PREFERENCES.md");
   if (existsSync(projectPrefs)) {

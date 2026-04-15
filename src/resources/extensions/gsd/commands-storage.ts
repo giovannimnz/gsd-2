@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { gsdRoot } from "./paths.js";
 import { logWarning } from "./workflow-logger.js";
 import { getErrorMessage } from "./error-utils.js";
+import { readStorageBackend } from "./storage-factory.js";
 
 /**
  * Get file size in a human-readable format.
@@ -48,32 +49,6 @@ function countFiles(dir: string): number {
     // Directory doesn't exist or is unreadable
   }
   return count;
-}
-
-/**
- * Read storage_backend from PREFERENCES.md.
- */
-function readStorageBackendConfig(basePath: string): string {
-  // Check project-level first
-  const projectPrefs = join(basePath, ".gsd", "PREFERENCES.md");
-  if (existsSync(projectPrefs)) {
-    const content = readFileSync(projectPrefs, "utf-8");
-    const match = content.match(/^storage_backend:\s*(.+)$/m);
-    if (match) return match[1].trim().toLowerCase();
-  }
-
-  // Check global
-  const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
-  if (home) {
-    const globalPrefs = join(home, ".gsd", "PREFERENCES.md");
-    if (existsSync(globalPrefs)) {
-      const content = readFileSync(globalPrefs, "utf-8");
-      const match = content.match(/^storage_backend:\s*(.+)$/m);
-      if (match) return match[1].trim().toLowerCase();
-    }
-  }
-
-  return "sqlite"; // default
 }
 
 /**
@@ -118,7 +93,7 @@ function updateStorageBackendConfig(basePath: string, backend: "sqlite" | "markd
  * Show storage status.
  */
 async function showStorageStatus(ctx: ExtensionCommandContext, basePath: string): Promise<void> {
-  const currentBackend = readStorageBackendConfig(basePath);
+  const currentBackend = readStorageBackend(basePath);
   const gsdDir = gsdRoot(basePath);
   const dbPath = join(gsdDir, "gsd.db");
   const storageDir = join(gsdDir, "storage");
@@ -162,7 +137,7 @@ async function switchBackend(ctx: ExtensionCommandContext, basePath: string, tar
     return;
   }
 
-  const currentBackend = readStorageBackendConfig(basePath);
+  const currentBackend = readStorageBackend(basePath);
   if (currentBackend === target) {
     ctx.ui.notify(`Already using ${target} backend.`, "info");
     return;
@@ -208,7 +183,7 @@ async function runMigration(ctx: ExtensionCommandContext, basePath: string, dire
  * Check storage health.
  */
 async function checkStorageHealth(ctx: ExtensionCommandContext, basePath: string): Promise<void> {
-  const currentBackend = readStorageBackendConfig(basePath);
+  const currentBackend = readStorageBackend(basePath);
   const gsdDir = gsdRoot(basePath);
   const lines: string[] = ["Storage Health Check\n"];
 

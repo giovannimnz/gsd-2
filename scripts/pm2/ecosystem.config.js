@@ -8,8 +8,8 @@ module.exports = {
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
-        HOSTNAME: '127.0.0.1',
-        PORT: '1027',
+        HOSTNAME: 'localhost',
+        PORT: '34000',
         GSD_WEB_DAEMON_MODE: '1',
         GSD_WEB_PACKAGE_ROOT: process.env.GSD_WEB_PACKAGE_ROOT || process.cwd(),
         GSD_WEB_ALLOWED_ORIGINS: process.env.GSD_WEB_ALLOWED_ORIGINS || 'https://gsd.atius.com.br',

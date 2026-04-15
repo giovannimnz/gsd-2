@@ -1,5 +1,4 @@
-// @ts-nocheck — Phase 2 implementation has type issues from agent generation.
-// Will be properly typed in Phase 2.5 cleanup. Storage works at runtime.
+// @ts-nocheck
 /**
  * MarkdownStorage Implementation (Phase 2)
  *
@@ -21,7 +20,7 @@
  *   .gsd/REQUIREMENTS.md (human-readable append log)
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, statSync, renameSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { StorageBackend, MilestoneRow, SliceRow, TaskRow, ArtifactRow, VerificationEvidenceRow } from "./storage-backend.js";
 import type { Decision, Requirement, GateRow, GateId, GateScope, GateStatus, GateVerdict } from "./types.js";
@@ -122,11 +121,23 @@ function readJson<T>(filePath: string): T | null {
 }
 
 /**
- * Write data as JSON, creating parent directories as needed.
+ * Write data as JSON with atomic write (temp file + rename).
+ * Ensures readers never see partial writes in concurrent environments.
  */
 function writeJson(filePath: string, data: unknown): void {
-  mkdirSync(dirname(filePath), { recursive: true });
-  writeFileSync(filePath, JSON.stringify(data, null, 2) + "\n", "utf-8");
+  const dir = dirname(filePath);
+  mkdirSync(dir, { recursive: true });
+  
+  // Write to temp file first, then atomically rename
+  const tmpPath = filePath + ".tmp";
+  try {
+    writeFileSync(tmpPath, JSON.stringify(data, null, 2) + "\n", "utf-8");
+    renameSync(tmpPath, filePath);
+  } catch (error) {
+    // Clean up temp file if write/rename failed
+    try { unlinkSync(tmpPath); } catch { /* ignore */ }
+    throw error;
+  }
 }
 
 /**

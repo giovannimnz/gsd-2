@@ -81,8 +81,9 @@ function generateEcosystemFile() {
         exec_mode: 'fork',
         env: {
           NODE_ENV: 'production',
-          HOSTNAME: '127.0.0.1',
-          PORT: '1027',
+          HOSTNAME: 'localhost',
+          PORT: '34000',
+          GSD_WEB_PORT: '34000',
           GSD_WEB_DAEMON_MODE: '1',
           GSD_WEB_PACKAGE_ROOT: PROJECT_ROOT,
           GSD_WEB_ALLOWED_ORIGINS: process.env.GSD_WEB_ALLOWED_ORIGINS || 'https://gsd.atius.com.br',
@@ -126,16 +127,18 @@ PACKAGE_ROOT=${PROJECT_ROOT}
 STANDALONE_DIR="$PACKAGE_ROOT/dist/web/standalone"
 
 export NODE_ENV=production
-export HOSTNAME=127.0.0.1
-export PORT=1027
+export HOSTNAME=localhost
+export PORT=34000
+export GSD_WEB_PORT=34000
 export GSD_WEB_DAEMON_MODE=1
 export GSD_WEB_PACKAGE_ROOT="$PACKAGE_ROOT"
 export GSD_WEB_ALLOWED_ORIGINS="\${GSD_WEB_ALLOWED_ORIGINS:-https://gsd.atius.com.br}"
 export GSD_VERSION="$($NODE_BIN -p "require('$PACKAGE_ROOT/package.json').version")"
 
 cd "$STANDALONE_DIR"
-printf '%s\\n' "$$" > /home/ubuntu/.gsd/web-server.pid
-printf 'GSD version: v%s\\n' "$GSD_VERSION"
+mkdir -p "$HOME/.gsd" 2>/dev/null || true
+printf '%s\n' "$$" > "$HOME/.gsd/web-server.pid"
+printf 'GSD version: v%s\n' "$GSD_VERSION"
 exec "$NODE_BIN" server.js
 `
 

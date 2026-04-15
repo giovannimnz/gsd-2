@@ -10,6 +10,7 @@ module.exports = {
         NODE_ENV: 'production',
         HOSTNAME: 'localhost',
         PORT: '34000',
+        GSD_WEB_PORT: '34000',
         GSD_WEB_DAEMON_MODE: '1',
         GSD_WEB_PACKAGE_ROOT: process.env.GSD_WEB_PACKAGE_ROOT || process.cwd(),
         GSD_WEB_ALLOWED_ORIGINS: process.env.GSD_WEB_ALLOWED_ORIGINS || 'https://gsd.atius.com.br',

@@ -7,6 +7,7 @@ import { resolveBridgeRuntimeConfig } from "./bridge-service"
 import { resolveTypeStrippingFlag, resolveSubprocessModule, buildSubprocessPrefixArgs } from "./ts-subprocess-flags"
 
 const VISUALIZER_MAX_BUFFER = 2 * 1024 * 1024
+const VISUALIZER_TIMEOUT = 10000 // 10 seconds timeout
 const VISUALIZER_MODULE_ENV = "GSD_VISUALIZER_MODULE"
 
 /**
@@ -98,6 +99,7 @@ export async function collectVisualizerData(projectCwdOverride?: string): Promis
           GSD_VISUALIZER_BASE: projectCwd,
         },
         maxBuffer: VISUALIZER_MAX_BUFFER,
+        timeout: VISUALIZER_TIMEOUT,
         windowsHide: true,
       },
       (error, stdout, stderr) => {

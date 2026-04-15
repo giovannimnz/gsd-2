@@ -49,6 +49,7 @@ import {
   buildPromptCommand,
 } from "@/lib/gsd-workspace-store"
 import { getMilestoneStatus, getSliceStatus, getTaskStatus, type ItemStatus } from "@/lib/workspace-status"
+import { type WorkspaceMilestoneTarget, type WorkspaceSliceTarget, type WorkspaceTaskTarget } from "@/lib/workspace-types"
 import { deriveWorkflowAction } from "@/lib/workflow-actions"
 import { executeWorkflowActionInPowerMode } from "@/lib/workflow-action-execution"
 import { useProjectStoreManager } from "@/lib/project-store-manager"
@@ -378,7 +379,7 @@ export function MilestoneExplorer({ isConnecting = false, width, onCollapse }: {
       : expandedSlices
 
   const milestoneStatus = new Map(
-    milestones.map((milestone) => [milestone.id, getMilestoneStatus(milestone, activeScope ?? {})]),
+    milestones.map((milestone: WorkspaceMilestoneTarget) => [milestone.id, getMilestoneStatus(milestone, activeScope ?? {})]),
   )
 
   const toggleMilestone = (id: string) => {
@@ -457,7 +458,7 @@ export function MilestoneExplorer({ isConnecting = false, width, onCollapse }: {
             <div className="px-3 py-2 text-xs text-muted-foreground">No milestones found for this project.</div>
           )}
 
-          {milestones.map((milestone) => {
+          {milestones.map((milestone: WorkspaceMilestoneTarget) => {
             const milestoneOpen = effectiveExpandedMilestones.includes(milestone.id)
             const milestoneActive = activeScope?.milestoneId === milestone.id
             const status = milestoneStatus.get(milestone.id) ?? "pending"
@@ -484,7 +485,7 @@ export function MilestoneExplorer({ isConnecting = false, width, onCollapse }: {
 
                 {milestoneOpen && (
                   <div className="ml-4">
-                    {milestone.slices.map((slice) => {
+                    {milestone.slices.map((slice: WorkspaceSliceTarget) => {
                       const sliceKey = `${milestone.id}-${slice.id}`
                       const sliceOpen = effectiveExpandedSlices.includes(sliceKey)
                       const sliceStatus = getSliceStatus(milestone.id, slice, activeScope ?? {})
@@ -517,7 +518,7 @@ export function MilestoneExplorer({ isConnecting = false, width, onCollapse }: {
                                   {slice.branch}
                                 </div>
                               )}
-                              {slice.tasks.map((task) => {
+                              {slice.tasks.map((task: WorkspaceTaskTarget) => {
                                 const taskStatus = getTaskStatus(milestone.id, slice.id, task, activeScope ?? {})
                                 const hasFile = !!(task.planPath || task.summaryPath)
                                 return (

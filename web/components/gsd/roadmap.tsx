@@ -4,6 +4,7 @@ import { CheckCircle2, Circle, Play, AlertTriangle, ChevronRight } from "lucide-
 import { cn } from "@/lib/utils"
 import { getLiveWorkspaceIndex, useGSDWorkspaceState, type RiskLevel } from "@/lib/gsd-workspace-store"
 import { getMilestoneStatus, getSliceStatus, type ItemStatus } from "@/lib/workspace-status"
+import { type WorkspaceSliceTarget, type WorkspaceTaskTarget } from "@/lib/workspace-types"
 
 const StatusIcon = ({
   status,
@@ -71,9 +72,9 @@ export function Roadmap() {
         <div className="space-y-6">
           {milestones.map((milestone) => {
             const milestoneStatus = getMilestoneStatus(milestone, activeScope)
-            const doneSlices = milestone.slices.filter((s) => s.done).length
-            const totalTasks = milestone.slices.reduce((acc, s) => acc + s.tasks.length, 0)
-            const doneTasks = milestone.slices.reduce((acc, s) => acc + s.tasks.filter((t) => t.done).length, 0)
+            const doneSlices = milestone.slices.filter((s: WorkspaceSliceTarget) => s.done).length
+            const totalTasks = milestone.slices.reduce((acc: number, s: WorkspaceSliceTarget) => acc + s.tasks.length, 0)
+            const doneTasks = milestone.slices.reduce((acc: number, s: WorkspaceSliceTarget) => acc + s.tasks.filter((t: WorkspaceTaskTarget) => t.done).length, 0)
 
             return (
               <div key={milestone.id} className="rounded-md border border-border bg-card">
@@ -102,9 +103,9 @@ export function Roadmap() {
                 </div>
 
                 <div className="divide-y divide-border">
-                  {milestone.slices.map((slice) => {
+                  {milestone.slices.map((slice: WorkspaceSliceTarget) => {
                     const sliceStatus = getSliceStatus(milestone.id, slice, activeScope)
-                    const sliceDoneTasks = slice.tasks.filter((t) => t.done).length
+                    const sliceDoneTasks = slice.tasks.filter((t: WorkspaceTaskTarget) => t.done).length
                     const sliceTotalTasks = slice.tasks.length
 
                     return (

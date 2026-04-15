@@ -65,7 +65,7 @@ import type {
   SessionManageResponse,
 } from "./session-browser-contract"
 import { authFetch, appendAuthParam } from "./auth"
-import { ContextualTips } from "../../packages/pi-coding-agent/src/core/contextual-tips.ts"
+import { ContextualTips } from "../../packages/pi-coding-agent/src/core/contextual-tips"
 
 export type WorkspaceStatus = "idle" | "loading" | "ready" | "error" | "unauthenticated"
 export type WorkspaceConnectionState =
@@ -126,7 +126,8 @@ export interface BridgeRuntimeSnapshot {
   lastError: BridgeLastError | null
 }
 
-export type { WorkspaceTaskTarget, RiskLevel, WorkspaceSliceTarget, WorkspaceMilestoneTarget } from "./workspace-types.js"
+import type { WorkspaceTaskTarget, RiskLevel, WorkspaceSliceTarget, WorkspaceMilestoneTarget } from "./workspace-types.js"
+export type { WorkspaceTaskTarget, RiskLevel, WorkspaceSliceTarget, WorkspaceMilestoneTarget }
 
 export interface WorkspaceScopeTarget {
   scope: string

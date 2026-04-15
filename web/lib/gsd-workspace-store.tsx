@@ -4828,10 +4828,59 @@ export class GSDWorkspaceStore {
     }
   }
 
-  private patchState(patch: Partial<WorkspaceStoreState>): void {
+  /** Batching flag to prevent excessive re-renders during streaming */
+  private batchDepth = 0
+  private batchHasEmit = false
+  private batchNeedsPollerSync = false
+
+  /**
+   * Batch multiple state updates together to prevent excessive re-renders.
+   * During streaming, this significantly reduces CPU usage by coalescing
+   * multiple patchState() calls into a single emit().
+   */
+  private patchState(patch: Partial<WorkspaceStoreState>, options?: { skipPollerSync?: boolean }): void {
     this.state = { ...this.state, ...patch }
-    this.syncOnboardingPoller()
+
+    // Track if we need to sync poller (only for onboarding-related changes)
+    if (!options?.skipPollerSync) {
+      this.batchNeedsPollerSync = true
+    }
+
+    // If we're in a batch, defer emit
+    if (this.batchDepth > 0) {
+      this.batchHasEmit = true
+      return
+    }
+
+    // Immediate emit for non-batched updates
+    if (this.batchNeedsPollerSync) {
+      this.syncOnboardingPoller()
+      this.batchNeedsPollerSync = false
+    }
     this.emit()
+  }
+
+  /**
+   * Start a batch of state updates. All patchState() calls within the batch
+   * will be coalesced into a single emit() at the end.
+   */
+  private startBatch(): void {
+    this.batchDepth++
+  }
+
+  /**
+   * End a batch of state updates and emit if any changes occurred.
+   */
+  private endBatch(): void {
+    this.batchDepth = Math.max(0, this.batchDepth - 1)
+    if (this.batchDepth === 0 && this.batchHasEmit) {
+      this.batchHasEmit = false
+      if (this.batchNeedsPollerSync) {
+        this.syncOnboardingPoller()
+        this.batchNeedsPollerSync = false
+      }
+      this.emit()
+    }
   }
 
   private syncOnboardingPoller(): void {
@@ -4935,7 +4984,7 @@ export class GSDWorkspaceStore {
   }
 
   private handleEvent(event: WorkspaceEvent): void {
-    this.patchState({ lastEventType: event.type })
+    this.patchState({ lastEventType: event.type }, { skipPollerSync: true })
 
     if (event.type === "bridge_status") {
       this.recordBridgeStatus((event as BridgeStatusEvent).bridge)
@@ -4954,7 +5003,7 @@ export class GSDWorkspaceStore {
 
     this.patchState({
       terminalLines: withTerminalLine(this.state.terminalLines, createTerminalLine(summary.type, summary.message)),
-    })
+    }, { skipPollerSync: true })
   }
 
   private routeLiveInteractionEvent(event: WorkspaceEvent): void {
@@ -5000,7 +5049,7 @@ export class GSDWorkspaceStore {
       case "editor":
         this.patchState({
           pendingUiRequests: [...this.state.pendingUiRequests, event as PendingUiRequest],
-        })
+        }, { skipPollerSync: true })
         break
       // Fire-and-forget methods → update state maps
       case "notify":
@@ -5014,7 +5063,7 @@ export class GSDWorkspaceStore {
           } else {
             next[event.statusKey] = event.statusText
           }
-          this.patchState({ statusTexts: next })
+          this.patchState({ statusTexts: next }, { skipPollerSync: true })
         }
         break
       case "setWidget":
@@ -5025,18 +5074,18 @@ export class GSDWorkspaceStore {
           } else {
             next[event.widgetKey] = { lines: event.widgetLines, placement: event.widgetPlacement }
           }
-          this.patchState({ widgetContents: next })
+          this.patchState({ widgetContents: next }, { skipPollerSync: true })
         }
         break
       case "setTitle":
         if (event.method === "setTitle") {
           const nextTitle = event.title.trim()
-          this.patchState({ titleOverride: nextTitle ? nextTitle : null })
+          this.patchState({ titleOverride: nextTitle ? nextTitle : null }, { skipPollerSync: true })
         }
         break
       case "set_editor_text":
         if (event.method === "set_editor_text") {
-          this.patchState({ editorTextBuffer: event.text })
+          this.patchState({ editorTextBuffer: event.text }, { skipPollerSync: true })
         }
         break
     }
@@ -5046,34 +5095,40 @@ export class GSDWorkspaceStore {
     const assistantEvent = event.assistantMessageEvent
     if (!assistantEvent) return
     if (assistantEvent.type === "text_delta" && typeof assistantEvent.delta === "string") {
+      // Start batch to coalesce multiple state updates into single emit
+      this.startBatch()
       // If we were accumulating thinking and now text arrives, finalize the thinking segment
       if (this.state.streamingThinkingText.length > 0) {
         this.patchState({
           currentTurnSegments: [...this.state.currentTurnSegments, { kind: "thinking", content: this.state.streamingThinkingText }],
           streamingThinkingText: "",
-        })
+        }, { skipPollerSync: true })
       }
       this.patchState({
         streamingAssistantText: this.state.streamingAssistantText + assistantEvent.delta,
-      })
+      }, { skipPollerSync: true })
+      this.endBatch()
     } else if (assistantEvent.type === "thinking_delta" && typeof assistantEvent.delta === "string") {
+      // Start batch to coalesce multiple state updates into single emit
+      this.startBatch()
       // If we were accumulating text and now thinking arrives, finalize the text segment
       if (this.state.streamingAssistantText.length > 0) {
         this.patchState({
           currentTurnSegments: [...this.state.currentTurnSegments, { kind: "text", content: this.state.streamingAssistantText }],
           streamingAssistantText: "",
-        })
+        }, { skipPollerSync: true })
       }
       this.patchState({
         streamingThinkingText: this.state.streamingThinkingText + assistantEvent.delta,
-      })
+      }, { skipPollerSync: true })
+      this.endBatch()
     } else if (assistantEvent.type === "thinking_end") {
       // Finalize thinking segment
       if (this.state.streamingThinkingText.length > 0) {
         this.patchState({
           currentTurnSegments: [...this.state.currentTurnSegments, { kind: "thinking", content: this.state.streamingThinkingText }],
           streamingThinkingText: "",
-        })
+        }, { skipPollerSync: true })
       }
     }
   }
@@ -5098,6 +5153,7 @@ export class GSDWorkspaceStore {
       .map((s) => s.content)
       .join("")
 
+    // Use skipPollerSync since turn boundary events don't affect onboarding polling
     if (fullText.length > 0 || finalSegments.length > 0) {
       const nextTranscript = [...this.state.liveTranscript, fullText]
       const nextThinking = [...this.state.liveThinkingTranscript, ""]
@@ -5117,20 +5173,20 @@ export class GSDWorkspaceStore {
         streamingThinkingText: "",
         currentTurnSegments: [],
         completedToolExecutions: [],
-      })
+      }, { skipPollerSync: true })
     } else if (this.state.streamingThinkingText.length > 0) {
       // Turn ended with only thinking, no visible text — clear
       this.patchState({
         streamingThinkingText: "",
         currentTurnSegments: [],
         completedToolExecutions: [],
-      })
+      }, { skipPollerSync: true })
     } else {
       // Empty turn — just reset
       this.patchState({
         currentTurnSegments: [],
         completedToolExecutions: [],
-      })
+      }, { skipPollerSync: true })
     }
   }
 
@@ -5147,7 +5203,7 @@ export class GSDWorkspaceStore {
       // interim text here, the chat timeline shows stale text above the tool.
       streamingAssistantText: "",
       streamingThinkingText: "",
-    })
+    }, { skipPollerSync: true })
   }
 
   private handleToolExecutionUpdate(event: ToolExecutionUpdateEvent): void {
@@ -5164,7 +5220,7 @@ export class GSDWorkspaceStore {
             }
           : active.result,
       },
-    })
+    }, { skipPollerSync: true })
   }
 
   private handleToolExecutionEnd(event: ToolExecutionEndEvent): void {
@@ -5186,9 +5242,9 @@ export class GSDWorkspaceStore {
         completedToolExecutions: next.length > 50 ? next.slice(next.length - 50) : next,
         // Also push tool segment into chronological order
         currentTurnSegments: [...this.state.currentTurnSegments, { kind: "tool", tool: completed }],
-      })
+      }, { skipPollerSync: true })
     } else {
-      this.patchState({ activeToolExecution: null })
+      this.patchState({ activeToolExecution: null }, { skipPollerSync: true })
     }
   }
 

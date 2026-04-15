@@ -13,13 +13,21 @@ if [ ! -d "$STANDALONE_DIR" ]; then
   exit 1
 fi
 
+# Load .env.local if exists (for login credentials and project path)
+if [ -f "$PACKAGE_ROOT/.env.local" ]; then
+  set -a
+  source "$PACKAGE_ROOT/.env.local"
+  set +a
+fi
+
 export NODE_ENV=production
-export HOSTNAME=localhost
-export PORT="${PORT:-34000}"
+export HOSTNAME="${GSD_WEB_HOST:-localhost}"
+export PORT="${GSD_WEB_PORT:-34000}"
 export GSD_WEB_PORT="${PORT:-34000}"
+export GSD_WEB_HOST="${HOSTNAME:-localhost}"
 export GSD_WEB_DAEMON_MODE=1
 export GSD_WEB_PACKAGE_ROOT="$PACKAGE_ROOT"
-export GSD_WEB_ALLOWED_ORIGINS="${GSD_WEB_ALLOWED_ORIGINS:-https://gsd.atius.com.br}"
+export GSD_WEB_ALLOWED_ORIGINS="${GSD_WEB_ALLOWED_ORIGINS:-http://localhost:34000}"
 export GSD_VERSION="$($NODE_BIN -p "require('$PACKAGE_ROOT/package.json').version")"
 
 # Note: Session token auto-generation removed to ensure login screen appears.

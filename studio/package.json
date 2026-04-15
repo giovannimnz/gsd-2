@@ -22,7 +22,7 @@
     "@types/node": "^22.18.6",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
-    "@vitejs/plugin-react": "^5.1.0",
+    "@vitejs/plugin-react": "~5.0.0",
     "electron": "^41.0.3",
     "electron-vite": "^5.0.0",
     "tailwindcss": "^4.2.1",

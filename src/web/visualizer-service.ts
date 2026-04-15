@@ -7,8 +7,22 @@ import { resolveBridgeRuntimeConfig } from "./bridge-service"
 import { resolveTypeStrippingFlag, resolveSubprocessModule, buildSubprocessPrefixArgs } from "./ts-subprocess-flags"
 
 const VISUALIZER_MAX_BUFFER = 2 * 1024 * 1024
-const VISUALIZER_TIMEOUT = 10000 // 10 seconds timeout
+const VISUALIZER_TIMEOUT = 60000 // 60 seconds timeout for heavy I/O operations
 const VISUALIZER_MODULE_ENV = "GSD_VISUALIZER_MODULE"
+
+// Cache configuration
+const CACHE_TTL_MS = 30000 // 30 seconds cache
+let cachedData: { data: SerializedVisualizerData; timestamp: number; projectCwd: string } | null = null
+
+/**
+ * Check if cached data is still valid for the given project.
+ */
+function isCacheValid(projectCwd: string): boolean {
+  if (!cachedData) return false
+  const now = Date.now()
+  const age = now - cachedData.timestamp
+  return age < CACHE_TTL_MS && cachedData.projectCwd === projectCwd
+}
 
 /**
  * Browser-safe version of VisualizerData where Map fields are converted to
@@ -41,13 +55,27 @@ function resolveTsLoaderPath(packageRoot: string): string {
 }
 
 /**
+ * Invalidate the visualizer cache. Call this when planning data changes.
+ */
+export function invalidateVisualizerCache(): void {
+  cachedData = null
+}
+
+/**
  * Loads visualizer data from the current project's filesystem via a child
  * process (required because upstream .ts files use Node ESM .js import
  * extensions that Turbopack cannot resolve). Converts Map fields to Records
  * for safe JSON serialization.
+ * 
+ * Results are cached for 30 seconds to avoid heavy I/O on every request.
  */
 export async function collectVisualizerData(projectCwdOverride?: string): Promise<SerializedVisualizerData> {
   const config = resolveBridgeRuntimeConfig(undefined, projectCwdOverride)
+  
+  // Check cache first
+  if (isCacheValid(config.projectCwd)) {
+    return cachedData!.data
+  }
   const { packageRoot, projectCwd } = config
 
   const resolveTsLoader = resolveTsLoaderPath(packageRoot)
@@ -109,7 +137,10 @@ export async function collectVisualizerData(projectCwdOverride?: string): Promis
         }
 
         try {
-          resolveResult(JSON.parse(stdout) as SerializedVisualizerData)
+          const result = JSON.parse(stdout) as SerializedVisualizerData
+          // Cache the result
+          cachedData = { data: result, timestamp: Date.now(), projectCwd }
+          resolveResult(result)
         } catch (parseError) {
           reject(
             new Error(

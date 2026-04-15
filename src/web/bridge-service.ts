@@ -4,17 +4,17 @@ import { StringDecoder } from "node:string_decoder";
 import type { Readable } from "node:stream";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { resolveTypeStrippingFlag, resolveSubprocessModule, buildSubprocessPrefixArgs } from "./ts-subprocess-flags.ts";
-import { safePackageRootFromImportUrl } from "./safe-import-meta-resolve.ts";
+import { resolveTypeStrippingFlag, resolveSubprocessModule, buildSubprocessPrefixArgs } from "./ts-subprocess-flags";
+import { safePackageRootFromImportUrl } from "./safe-import-meta-resolve";
 
-import type { AgentSessionEvent, SessionStateChangeReason } from "../../packages/pi-coding-agent/src/core/agent-session.ts";
+import type { AgentSessionEvent, SessionStateChangeReason } from "../../packages/pi-coding-agent/src/core/agent-session";
 import type {
   RpcCommand,
   RpcExtensionUIRequest,
   RpcExtensionUIResponse,
   RpcResponse,
   RpcSessionState,
-} from "../../packages/pi-coding-agent/src/modes/rpc/rpc-types.ts";
+} from "../../packages/pi-coding-agent/src/modes/rpc/rpc-types";
 import {
   SESSION_BROWSER_SCOPE,
   normalizeSessionBrowserQuery,
@@ -25,20 +25,20 @@ import {
   type SessionManageErrorCode,
   type SessionManageErrorResponse,
   type SessionManageResponse,
-} from "../../web/lib/session-browser-contract.ts";
-import { authFilePath } from "../app-paths.ts";
-import { getProjectSessionsDir } from "../project-sessions.ts";
+} from "../../web/lib/session-browser-contract";
+import { authFilePath } from "../app-paths";
+import { getProjectSessionsDir } from "../project-sessions";
 import {
   collectOnboardingState,
   registerOnboardingBridgeAuthRefresher,
   type OnboardingLockReason,
   type OnboardingState,
-} from "./onboarding-service.ts";
+} from "./onboarding-service";
 import {
   collectAuthoritativeAutoDashboardData,
   collectTestOnlyFallbackAutoDashboardData,
-} from "./auto-dashboard-service.ts";
-import { resolveGsdCliEntry } from "./cli-entry.ts";
+} from "./auto-dashboard-service";
+import { resolveGsdCliEntry } from "./cli-entry";
 
 // The standalone Next.js bundle bakes import.meta.url at build time with the
 // CI runner's absolute path.  On Windows, fileURLToPath() rejects a Linux

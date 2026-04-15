@@ -3,9 +3,9 @@ import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 
-import { resolveBridgeRuntimeConfig } from "./bridge-service.ts"
-import { resolveTypeStrippingFlag, resolveSubprocessModule, buildSubprocessPrefixArgs } from "./ts-subprocess-flags.ts"
-import type { HooksData } from "../../web/lib/remaining-command-types.ts"
+import { resolveBridgeRuntimeConfig } from "./bridge-service"
+import { resolveTypeStrippingFlag, resolveSubprocessModule, buildSubprocessPrefixArgs } from "./ts-subprocess-flags"
+import type { HooksData } from "../../web/lib/remaining-command-types"
 
 const HOOKS_MAX_BUFFER = 512 * 1024
 const HOOKS_MODULE_ENV = "GSD_HOOKS_MODULE"

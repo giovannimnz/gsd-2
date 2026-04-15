@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
-import type { ProjectDetectionKind, ProjectDetectionSignals } from "./bridge-service.ts";
-import { detectProjectKind } from "./bridge-service.ts";
+import type { ProjectDetectionKind, ProjectDetectionSignals } from "./bridge-service";
+import { detectProjectKind } from "./bridge-service";
 
 // ─── Project Discovery ─────────────────────────────────────────────────────
 

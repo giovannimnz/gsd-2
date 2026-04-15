@@ -7,8 +7,8 @@ import {
   collectCurrentProjectOnboardingState,
   collectSelectiveLiveStatePayload,
   resolveBridgeRuntimeConfig,
-} from "./bridge-service.ts"
-import { resolveTypeStrippingFlag, resolveSubprocessModule, buildSubprocessPrefixArgs } from "./ts-subprocess-flags.ts"
+} from "./bridge-service"
+import { resolveTypeStrippingFlag, resolveSubprocessModule, buildSubprocessPrefixArgs } from "./ts-subprocess-flags"
 import type {
   WorkspaceRecoveryBrowserAction,
   WorkspaceRecoveryCodeSummary,
@@ -16,7 +16,7 @@ import type {
   WorkspaceRecoveryDiagnostics,
   WorkspaceRecoveryIssueDigest,
   WorkspaceRecoverySummaryTone,
-} from "../../web/lib/command-surface-contract.ts"
+} from "../../web/lib/command-surface-contract"
 
 const RECOVERY_DIAGNOSTICS_MAX_BUFFER = 1024 * 1024
 

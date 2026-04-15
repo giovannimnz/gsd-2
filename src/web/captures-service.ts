@@ -3,9 +3,9 @@ import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 
-import { resolveBridgeRuntimeConfig } from "./bridge-service.ts"
-import { resolveTypeStrippingFlag, resolveSubprocessModule, buildSubprocessPrefixArgs } from "./ts-subprocess-flags.ts"
-import type { CapturesData, CaptureResolveRequest, CaptureResolveResult } from "../../web/lib/knowledge-captures-types.ts"
+import { resolveBridgeRuntimeConfig } from "./bridge-service"
+import { resolveTypeStrippingFlag, resolveSubprocessModule, buildSubprocessPrefixArgs } from "./ts-subprocess-flags"
+import type { CapturesData, CaptureResolveRequest, CaptureResolveResult } from "../../web/lib/knowledge-captures-types"
 
 const CAPTURES_MAX_BUFFER = 2 * 1024 * 1024
 const CAPTURES_MODULE_ENV = "GSD_CAPTURES_MODULE"

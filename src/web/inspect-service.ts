@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 
-import { resolveBridgeRuntimeConfig } from "./bridge-service.ts"
-import type { InspectData } from "../../web/lib/remaining-command-types.ts"
+import { resolveBridgeRuntimeConfig } from "./bridge-service"
+import type { InspectData } from "../../web/lib/remaining-command-types"
 
 /**
  * Collects project inspection data by reading gsd-db.json directly.

@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { resolveTypeStrippingFlag } from "./ts-subprocess-flags.ts";
+import { resolveTypeStrippingFlag } from "./ts-subprocess-flags";
 
 export interface GsdCliEntry {
   command: string;

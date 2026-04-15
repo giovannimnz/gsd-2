@@ -3,9 +3,9 @@ import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 
-import { resolveBridgeRuntimeConfig } from "./bridge-service.ts"
-import { resolveTypeStrippingFlag, resolveSubprocessModule, buildSubprocessPrefixArgs } from "./ts-subprocess-flags.ts"
-import type { SkillHealthReport } from "../../web/lib/diagnostics-types.ts"
+import { resolveBridgeRuntimeConfig } from "./bridge-service"
+import { resolveTypeStrippingFlag, resolveSubprocessModule, buildSubprocessPrefixArgs } from "./ts-subprocess-flags"
+import type { SkillHealthReport } from "../../web/lib/diagnostics-types"
 
 const SKILL_HEALTH_MAX_BUFFER = 2 * 1024 * 1024
 const SKILL_HEALTH_MODULE_ENV = "GSD_SKILL_HEALTH_MODULE"

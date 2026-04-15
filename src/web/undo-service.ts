@@ -3,9 +3,9 @@ import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 
-import { resolveBridgeRuntimeConfig } from "./bridge-service.ts"
-import { resolveTypeStrippingFlag, resolveSubprocessModule, buildSubprocessPrefixArgs } from "./ts-subprocess-flags.ts"
-import type { UndoInfo, UndoResult } from "../../web/lib/remaining-command-types.ts"
+import { resolveBridgeRuntimeConfig } from "./bridge-service"
+import { resolveTypeStrippingFlag, resolveSubprocessModule, buildSubprocessPrefixArgs } from "./ts-subprocess-flags"
+import type { UndoInfo, UndoResult } from "../../web/lib/remaining-command-types"
 
 const UNDO_MAX_BUFFER = 2 * 1024 * 1024
 const UNDO_MODULE_ENV = "GSD_UNDO_MODULE"

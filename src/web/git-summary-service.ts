@@ -6,14 +6,14 @@ import {
   nativeHasChanges,
   nativeHasMergeConflicts,
   nativeGetCurrentBranch,
-} from "../resources/extensions/gsd/native-git-bridge.ts"
-import { resolveBridgeRuntimeConfig } from "./bridge-service.ts"
+} from "../resources/extensions/gsd/native-git-bridge"
+import { resolveBridgeRuntimeConfig } from "./bridge-service"
 import {
   GIT_SUMMARY_SCOPE,
   type GitSummaryCounts,
   type GitSummaryFile,
   type GitSummaryResponse,
-} from "../../web/lib/git-summary-contract.ts"
+} from "../../web/lib/git-summary-contract"
 
 const MAX_CHANGED_FILES = 25
 const CONFLICT_STATUS_CODES = new Set(["DD", "AU", "UD", "UA", "DU", "AA", "UU"])

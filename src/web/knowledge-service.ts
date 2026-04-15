@@ -1,8 +1,8 @@
 import { existsSync, readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
 
-import { resolveBridgeRuntimeConfig } from "./bridge-service.ts"
-import type { KnowledgeEntry, KnowledgeData } from "../../web/lib/knowledge-captures-types.ts"
+import { resolveBridgeRuntimeConfig } from "./bridge-service"
+import type { KnowledgeEntry, KnowledgeData } from "../../web/lib/knowledge-captures-types"
 
 /**
  * Reads and parses KNOWLEDGE.md directly from disk. No child process needed

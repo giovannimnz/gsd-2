@@ -12,7 +12,7 @@ import { existsSync as defaultExistsSync } from "node:fs"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 
-import { resolveTypeStrippingFlag } from "./ts-subprocess-flags.ts"
+import { resolveTypeStrippingFlag } from "./ts-subprocess-flags"
 
 const DEFAULT_MAX_BUFFER = 2 * 1024 * 1024
 const DEFAULT_TIMEOUT_MS = 30_000

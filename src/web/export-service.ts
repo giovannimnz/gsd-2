@@ -3,9 +3,9 @@ import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 
-import { resolveBridgeRuntimeConfig } from "./bridge-service.ts"
-import { resolveTypeStrippingFlag, resolveSubprocessModule, buildSubprocessPrefixArgs } from "./ts-subprocess-flags.ts"
-import type { ExportResult } from "../../web/lib/remaining-command-types.ts"
+import { resolveBridgeRuntimeConfig } from "./bridge-service"
+import { resolveTypeStrippingFlag, resolveSubprocessModule, buildSubprocessPrefixArgs } from "./ts-subprocess-flags"
+import type { ExportResult } from "../../web/lib/remaining-command-types"
 
 const EXPORT_MAX_BUFFER = 4 * 1024 * 1024
 const EXPORT_MODULE_ENV = "GSD_EXPORT_MODULE"

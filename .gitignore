@@ -85,3 +85,7 @@ bun.lock
 
 # Local environment
 .env.local
+
+# VS Code temporary files
+.tempCodeRunnerFile.*
+tempCodeRunnerFile.*

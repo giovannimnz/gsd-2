@@ -1,8 +1,8 @@
 import { existsSync, readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { homedir } from "node:os";
-import { webPreferencesPath } from "../../../../src/app-paths.ts";
-import { discoverProjects, invalidateProjectDiscoveryCache } from "../../../../src/web/project-discovery-service.ts";
+import { webPreferencesPath } from "@/app-paths";
+import { discoverProjects, invalidateProjectDiscoveryCache } from "../../../../src/web/project-discovery-service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

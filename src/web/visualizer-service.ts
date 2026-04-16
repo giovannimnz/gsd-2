@@ -62,6 +62,18 @@ export function invalidateVisualizerCache(): void {
 }
 
 /**
+ * Preload visualizer data to warm up the cache.
+ * Call this on server startup to avoid slow first request.
+ */
+export async function preloadVisualizerCache(projectCwdOverride?: string): Promise<void> {
+  try {
+    await collectVisualizerData(projectCwdOverride)
+  } catch {
+    // Silently ignore preload errors - the actual request will handle them
+  }
+}
+
+/**
  * Loads visualizer data from the current project's filesystem via a child
  * process (required because upstream .ts files use Node ESM .js import
  * extensions that Turbopack cannot resolve). Converts Map fields to Records

@@ -914,20 +914,32 @@ export async function loadVisualizerData(basePath: string): Promise<VisualizerDa
   }
 
   const agentActivity = loadAgentActivity(units, milestones);
-  const { changelog, verifications: sliceVerifications } = await loadChangelogAndVerifications(basePath, milestones);
 
-  const knowledge = loadKnowledge(basePath);
-  const allCaptures = loadAllCaptures(basePath);
-  const pendingCount = countPendingCaptures(basePath);
+  // Parallelize independent I/O operations for better performance
+  const [
+    changelogResult,
+    knowledge,
+    allCaptures,
+    pendingCount,
+    health,
+    discussion,
+  ] = await Promise.all([
+    loadChangelogAndVerifications(basePath, milestones),
+    Promise.resolve(loadKnowledge(basePath)),
+    Promise.resolve(loadAllCaptures(basePath)),
+    Promise.resolve(countPendingCaptures(basePath)),
+    Promise.resolve(loadHealth(units, totals, basePath)),
+    Promise.resolve(loadDiscussionState(basePath, milestones)),
+  ]);
+
+  const { changelog, verifications: sliceVerifications } = changelogResult;
   const captures: CapturesInfo = {
     entries: allCaptures,
     pendingCount,
     totalCount: allCaptures.length,
   };
 
-  const health = loadHealth(units, totals, basePath);
   const stats = buildVisualizerStats(milestones, changelog.entries);
-  const discussion = loadDiscussionState(basePath, milestones);
 
   return {
     milestones,

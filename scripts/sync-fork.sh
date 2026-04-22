@@ -80,7 +80,7 @@ else
     git stash push -m "$STASH_NAME" -- ':!.gsd/' 2>/dev/null || git stash push -m "$STASH_NAME" 2>/dev/null
     STASHED=true
   fi
-  git pull origin "$BRANCH" --rebase || {
+  git pull origin "$BRANCH" --no-rebase || {
     echo "ERROR: Failed to pull from origin. Resolve conflicts first."
     [[ "${STASHED:-false}" == true ]] && git stash pop 2>/dev/null || true
     exit 1
@@ -98,17 +98,36 @@ if [[ "$DRY_RUN" == true ]]; then
 else
   MERGE_OUTPUT="$(git merge "$UPSTREAM_NAME/$BRANCH" --no-edit -X "$STRATEGY" 2>&1)" || {
     echo ""
-    echo "WARNING: Merge had conflicts. Manual intervention needed."
-    echo "Merge output: $MERGE_OUTPUT"
-    echo ""
-    echo "To continue manually:"
-    echo "  1. Fix conflicts: git status"
-    echo "  2. Stage fixes:    git add <files>"
-    echo "  3. Complete merge: git commit"
-    echo "  4. Push:           git push origin $BRANCH"
-    echo ""
-    echo "Or abort: git merge --abort"
-    exit 1
+    echo "WARNING: Merge had conflicts. Resolving automatically..."
+    # Auto-resolve delete/modify conflicts by keeping ours (fork version)
+    for file in $(git diff --name-only --diff-filter=UD 2>/dev/null); do
+      echo "  Keeping fork version of: $file"
+      git checkout --ours "$file" 2>/dev/null || git rm "$file" 2>/dev/null
+      git add "$file" 2>/dev/null || true
+    done
+    # Also handle package.json conflicts - keep our fork version
+    if git diff --name-only --diff-filter=U 2>/dev/null | grep -q "^package.json$"; then
+      echo "  Keeping fork package.json..."
+      git checkout --ours package.json 2>/dev/null
+      git add package.json 2>/dev/null || true
+    fi
+    if git diff --name-only --diff-filter=U 2>/dev/null | grep -q "^package-lock.json$"; then
+      echo "  Keeping fork package-lock.json..."
+      git checkout --ours package-lock.json 2>/dev/null
+      git add package-lock.json 2>/dev/null || true
+    fi
+    if ! git diff --name-only --diff-filter=U 2>/dev/null | grep -q .; then
+      echo "  All conflicts auto-resolved. Completing merge..."
+      git commit --no-edit 2>/dev/null || {
+        echo "ERROR: Could not complete merge commit"
+        exit 1
+      }
+    else
+      REMAINING=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
+      echo "WARNING: Remaining conflicts: $REMAINING"
+      echo "Please resolve manually: git add <files> && git merge --continue"
+      exit 1
+    fi
   }
   echo "  $MERGE_OUTPUT"
 fi

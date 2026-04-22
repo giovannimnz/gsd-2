@@ -2,102 +2,142 @@ name: Auto Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g., 2.74.0.1)'
+        description: 'Version to release (e.g., 2.74.0.1) — leave empty for auto-bump'
         required: false
         type: string
+      dry_run:
+        description: 'Dry run (no actual publish)'
+        required: false
+        type: boolean
 
 concurrency:
   group: auto-release-${{ github.ref }}
   cancel-in-progress: false
 
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
 jobs:
-  create-release:
-    name: Create GitHub Release
+  # ── Step 1: Sync with upstream ──────────────────────────────────────
+  upstream-sync:
+    name: Sync with upstream
     runs-on: ubuntu-latest
     if: ${{ github.repository == 'giovannimnz/gsd-2' }}
-    permissions:
-      contents: write
     outputs:
-      version: ${{ steps.get-version.outputs.version }}
-      tag_name: ${{ steps.get-version.outputs.tag_name }}
+      sync_ran: ${{ steps.sync.outputs.ran }}
     steps:
-      - name: Get version
-        id: get-version
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            VERSION="${{ inputs.version }}"
-          else
-            VERSION="${GITHUB_REF#refs/tags/v}"
-          fi
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "tag_name=v${VERSION}" >> $GITHUB_OUTPUT
-          echo "Release version: ${VERSION}"
-
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate release notes
-        id: notes
+      - name: Add upstream remote
         run: |
-          VERSION="${{ steps.get-version.outputs.version }}"
-          TAG="v${VERSION}"
-          
-          # Get previous tag
-          PREV_TAG=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || echo "")
-          
-          if [[ -n "$PREV_TAG" ]]; then
-            CHANGES=$(git log --pretty=format:"- %s (%h)" "${PREV_TAG}..${TAG}")
+          git remote add upstream https://github.com/gsd-build/gsd-2.git 2>/dev/null || \
+            git remote set-url upstream https://github.com/gsd-build/gsd-2.git
+          git fetch upstream --prune
+
+      - name: Check for upstream changes
+        id: check
+        run: |
+          COMMON=$(git merge-base HEAD upstream/main 2>/dev/null)
+          UPSTREAM_SHA=$(git rev-parse upstream/main 2>/dev/null)
+          if [[ -z "$COMMON" ]] || [[ "$COMMON" == "$UPSTREAM_SHA" ]]; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "No upstream changes"
           else
-            CHANGES=$(git log --pretty=format:"- %s (%h)" -20)
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            COUNT=$(git log --oneline ${COMMON}..upstream/main 2>/dev/null | wc -l)
+            echo "Upstream has $COUNT new commits"
           fi
-          
-          cat > NOTES.md << EOF
-          ## GSD-2 ${VERSION}
-          
-          ### Changes
-          
-          ${CHANGES}
-          
-          ---
-          *Released automatically via GitHub Actions*
-          EOF
-          
-          echo "notes_file=NOTES.md" >> $GITHUB_OUTPUT
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+      - name: Merge upstream
+        if: steps.check.outputs.has_changes == 'true'
+        id: sync
+        run: |
+          echo "ran=true" >> $GITHUB_OUTPUT
+          if git merge upstream/main --no-edit -X theirs --allow-unrelated-histories 2>&1; then
+            echo "Merge successful"
+          else
+            echo "Merge had conflicts — aborting"
+            git merge --abort || true
+          fi
+
+  # ── Step 2: Bump version + build ────────────────────────────────────
+  build:
+    name: Build & Version Bump
+    needs: upstream-sync
+    runs-on: ubuntu-latest
+    if: ${{ github.repository == 'giovannimnz/gsd-2' }}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag_name: ${{ steps.version.outputs.tag_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          tag_name: ${{ steps.get-version.outputs.tag_name }}
-          name: "GSD-2 ${{ steps.get-version.outputs.version }}"
-          body_path: ${{ steps.notes.outputs.notes_file }}
-          generate_release_notes: true
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Configure Git
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Bump version
+        id: version
+        run: |
+          node scripts/version-bump.mjs
+          NEW_VERSION="$(node -p "require('./package.json').version")"
+          echo "version=${NEW_VERSION}" >> $GITHUB_OUTPUT
+          echo "tag_name=v${NEW_VERSION}" >> $GITHUB_OUTPUT
+          echo "Version: ${NEW_VERSION}"
+
+      - name: Commit version bump
+        run: |
+          git add package.json
+          git commit -m "chore: bump version to ${{ steps.version.outputs.version }}"
+
+  # ── Step 3: Publish to npm ───────────────────────────────────────────
   publish-npm:
     name: Publish to npm
-    needs: create-release
+    needs: build
     runs-on: ubuntu-latest
     if: ${{ github.repository == 'giovannimnz/gsd-2' }}
     environment: release
-    permissions:
-      contents: read
-      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.create-release.outputs.tag_name }}
+          ref: ${{ needs.build.outputs.tag_name }}
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git config tag.forcePushTags true
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -115,16 +155,85 @@ jobs:
         run: npm pack --dry-run
 
       - name: Publish to npm
+        if: ${{ github.event.inputs.dry_run != true }}
         run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Release summary
+      - name: Create git tag
+        if: ${{ github.event.inputs.dry_run != true }}
         run: |
-          VERSION="${{ needs.create-release.outputs.version }}"
+          git tag -a "${{ needs.build.outputs.tag_name }}" -m "Release ${{ needs.build.outputs.version }}"
+          git push origin "${{ needs.build.outputs.tag_name }}"
+
+  # ── Step 4: Create GitHub Release ────────────────────────────────────
+  create-release:
+    name: Create GitHub Release
+    needs: [build, publish-npm]
+    runs-on: ubuntu-latest
+    if: ${{ github.repository == 'giovannimnz/gsd-2' && github.event.inputs.dry_run != true }}
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.tag_name }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate release notes
+        run: |
+          TAG="${{ needs.build.outputs.tag_name }}"
+          PREV_TAG=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || echo "")
+          if [[ -n "$PREV_TAG" ]]; then
+            CHANGES=$(git log --pretty=format:"- %s (%h)" "${PREV_TAG}..${TAG}" | head -50)
+          else
+            CHANGES=$(git log --pretty=format:"- %s (%h)" -20)
+          fi
+          cat > NOTES.md << EOF
+          ## GSD-2 ${{ needs.build.outputs.version }}
+
+          ### Changes
+
+          ${CHANGES}
+
+          ---
+          *Released automatically via GitHub Actions*
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build.outputs.tag_name }}
+          name: "GSD-2 ${{ needs.build.outputs.version }}"
+          body_path: NOTES.md
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Step 5: Summary ──────────────────────────────────────────────────
+  summary:
+    name: Release Summary
+    needs: [build, publish-npm, create-release]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Summary
+        run: |
+          VERSION="${{ needs.build.outputs.version }}"
+          TAG="${{ needs.build.outputs.tag_name }}"
+          DRY="${{ github.event.inputs.dry_run }}"
           {
-            echo "## Released v${VERSION}"
-            echo
-            echo "- npm: https://www.npmjs.com/package/gsd-pi/v/${VERSION}"
-            echo "- GitHub: https://github.com/giovannimnz/gsd-2/releases/tag/v${VERSION}"
+            echo "## Release Complete"
+            echo ""
+            if [[ "$DRY" == "true" ]]; then
+              echo "**Dry run mode** — no actual release was created"
+              echo ""
+            fi
+            echo "| Artifact | Link |"
+            echo "|----------|------|"
+            echo "| npm | https://www.npmjs.com/package/gsd-pi/v/${VERSION} |"
+            echo "| GitHub Release | https://github.com/giovannimnz/gsd-2/releases/tag/${TAG} |"
           } >> "$GITHUB_STEP_SUMMARY"

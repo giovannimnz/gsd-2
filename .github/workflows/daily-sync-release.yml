@@ -1,0 +1,142 @@
+name: Daily Auto-Sync + Release
+
+# Run daily at 03:00 UTC
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      strategy:
+        description: 'Merge strategy'
+        required: false
+        default: 'theirs'
+        type: choice
+        options:
+          - theirs
+          - ours
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  FORCE_COLOR: '0'
+
+jobs:
+  daily-sync:
+    name: Daily Sync with Upstream
+    runs-on: ubuntu-latest
+    if: ${{ github.repository == 'giovannimnz/gsd-2' }}
+    outputs:
+      has_changes: ${{ steps.check.outputs.has_changes }}
+      new_version: ${{ steps.version.outputs.version }}
+      tag_name: ${{ steps.version.outputs.tag_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/gsd-build/gsd-2.git || \
+            git remote set-url upstream https://github.com/gsd-build/gsd-2.git
+          git fetch upstream --prune
+
+      - name: Check for upstream changes
+        id: check
+        run: |
+          COMMON=$(git merge-base HEAD upstream/main 2>/dev/null)
+          UPSTREAM_SHA=$(git rev-parse upstream/main)
+
+          if [[ -z "$COMMON" ]]; then
+            echo "No common ancestor found — assuming unrelated histories"
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          if [[ "$COMMON" == "$UPSTREAM_SHA" ]]; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "Upstream is already in our history"
+          else
+            COUNT=$(git log --oneline ${COMMON}..upstream/main 2>/dev/null | wc -l)
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "Upstream has $COUNT new commits"
+          fi
+
+      - name: Merge upstream
+        if: steps.check.outputs.has_changes == 'true'
+        run: |
+          STRATEGY="${{ github.event.inputs.strategy || 'theirs' }}"
+          echo "Merge strategy: $STRATEGY"
+          git pull origin main --rebase || true
+          if git merge upstream/main --no-edit -X "$STRATEGY" --allow-unrelated-histories 2>&1; then
+            echo "Merge successful"
+          else
+            echo "Merge had conflicts — aborting"
+            git merge --abort || true
+            exit 0
+          fi
+
+      - name: Set up Node.js
+        if: steps.check.outputs.has_changes == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Bump version
+        if: steps.check.outputs.has_changes == 'true'
+        id: version
+        run: |
+          node scripts/version-bump.mjs
+          NEW_VERSION="$(node -p "require('./package.json').version")"
+          echo "version=${NEW_VERSION}" >> $GITHUB_OUTPUT
+          echo "tag_name=v${NEW_VERSION}" >> $GITHUB_OUTPUT
+          echo "New version: ${NEW_VERSION}"
+
+      - name: Commit version bump
+        if: steps.check.outputs.has_changes == 'true'
+        run: |
+          git add package.json
+          NEW_VERSION="$(node -p "require('./package.json').version")"
+          git commit -m "chore: daily sync - bump version to ${NEW_VERSION}" || true
+
+      - name: Push to origin
+        if: steps.check.outputs.has_changes == 'true'
+        run: |
+          git push origin main
+          NEW_VERSION="$(node -p "require('./package.json').version")"
+          git tag -a "v${NEW_VERSION}" -m "Daily release v${NEW_VERSION}"
+          git push origin "v${NEW_VERSION}"
+          echo "Pushed main and tag v${NEW_VERSION}"
+
+      - name: Sync summary
+        if: always()
+        run: |
+          HAS_CHANGES="${{ steps.check.outputs.has_changes }}"
+          VERSION="${{ steps.version.outputs.version || 'N/A' }}"
+          {
+            echo "## Daily Sync Complete"
+            echo ""
+            echo "| Step | Status |"
+            echo "|------|--------|"
+            echo "| Upstream fetch | OK |"
+            echo "| Upstream changes | ${HAS_CHANGES} |"
+            if [[ "$HAS_CHANGES" == "true" ]]; then
+              echo "| Merge | OK |"
+              echo "| Version bump | ${VERSION} |"
+              echo "| Push | OK |"
+              echo ""
+              echo "**Next:** Release workflow will create GitHub Release + npm publish"
+            else
+              echo "| No changes needed | — |"
+            fi
+            echo ""
+            echo "**Repository:** https://github.com/giovannimnz/gsd-2"
+          } >> "$GITHUB_STEP_SUMMARY"

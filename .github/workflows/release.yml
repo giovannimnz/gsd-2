@@ -2,51 +2,105 @@ name: Auto Release
 
 on:
   push:
-    branches:
-      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 2.74.0.1)'
+        required: false
+        type: string
 
 concurrency:
   group: auto-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  release-please:
-    if: ${{ github.repository == 'giovannimnz/gsd-2' }}
-    name: Release Please
+  create-release:
+    name: Create GitHub Release
     runs-on: ubuntu-latest
+    if: ${{ github.repository == 'giovannimnz/gsd-2' }}
     permissions:
       contents: write
-      pull-requests: write
     outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
-      version: ${{ steps.release.outputs.version }}
+      version: ${{ steps.get-version.outputs.version }}
+      tag_name: ${{ steps.get-version.outputs.tag_name }}
     steps:
-      - name: Run release-please
-        id: release
-        uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38
+      - name: Get version
+        id: get-version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tag_name=v${VERSION}" >> $GITHUB_OUTPUT
+          echo "Release version: ${VERSION}"
+
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          release-type: node
+          fetch-depth: 0
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          VERSION="${{ steps.get-version.outputs.version }}"
+          TAG="v${VERSION}"
+          
+          # Get previous tag
+          PREV_TAG=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || echo "")
+          
+          if [[ -n "$PREV_TAG" ]]; then
+            CHANGES=$(git log --pretty=format:"- %s (%h)" "${PREV_TAG}..${TAG}")
+          else
+            CHANGES=$(git log --pretty=format:"- %s (%h)" -20)
+          fi
+          
+          cat > NOTES.md << EOF
+          ## GSD-2 ${VERSION}
+          
+          ### Changes
+          
+          ${CHANGES}
+          
+          ---
+          *Released automatically via GitHub Actions*
+          EOF
+          
+          echo "notes_file=NOTES.md" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.get-version.outputs.tag_name }}
+          name: "GSD-2 ${{ steps.get-version.outputs.version }}"
+          body_path: ${{ steps.notes.outputs.notes_file }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   publish-npm:
     name: Publish to npm
-    needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    needs: create-release
     runs-on: ubuntu-latest
+    if: ${{ github.repository == 'giovannimnz/gsd-2' }}
     environment: release
     permissions:
       contents: read
       id-token: write
     steps:
-      - name: Checkout release tag
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
+          ref: ${{ needs.create-release.outputs.tag_name }}
           fetch-depth: 0
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
@@ -60,19 +114,17 @@ jobs:
       - name: Dry-run package
         run: npm pack --dry-run
 
-      - name: Clear token auth for trusted publishing
-        run: |
-          unset NODE_AUTH_TOKEN
-          echo "NODE_AUTH_TOKEN=" >> "$GITHUB_ENV"
-
       - name: Publish to npm
         run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Release summary
         run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
           {
-            echo "## Released ${{ needs.release-please.outputs.tag_name }}"
+            echo "## Released v${VERSION}"
             echo
-            echo "- npm: https://www.npmjs.com/package/gsd-pi"
-            echo "- GitHub: https://github.com/giovannimnz/gsd-2/releases/tag/${{ needs.release-please.outputs.tag_name }}"
+            echo "- npm: https://www.npmjs.com/package/gsd-pi/v/${VERSION}"
+            echo "- GitHub: https://github.com/giovannimnz/gsd-2/releases/tag/v${VERSION}"
           } >> "$GITHUB_STEP_SUMMARY"

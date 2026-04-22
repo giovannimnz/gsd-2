@@ -5,6 +5,7 @@ import {
 	getDefaultTTL,
 	getDiscoverableProviders,
 	getDiscoveryAdapter,
+	supportsDiscoveryForApi,
 } from "./model-discovery.js";
 
 // ─── OpenAI Adapter enriched metadata parsing ────────────────────────────────
@@ -191,9 +192,9 @@ describe("getDiscoveryAdapter", () => {
 		assert.equal(adapter.supportsDiscovery, false);
 	});
 
-	it("returns OpenAI adapter for atius-router alias", () => {
-		const adapter = getDiscoveryAdapter("atius-router");
-		assert.equal(adapter.provider, "atius-router");
+	it("returns OpenAI-style adapter for unknown provider with OpenAI-compatible API", () => {
+		const adapter = getDiscoveryAdapter("my-proxy", ["openai-completions"]);
+		assert.equal(adapter.provider, "my-proxy");
 		assert.equal(adapter.supportsDiscovery, true);
 	});
 
@@ -266,5 +267,17 @@ describe("DISCOVERY_TTLS", () => {
 			assert.equal(typeof value, "number");
 			assert.ok(value > 0);
 		}
+	});
+});
+
+describe("supportsDiscoveryForApi", () => {
+	it("returns true for OpenAI-compatible APIs", () => {
+		assert.equal(supportsDiscoveryForApi("openai-completions"), true);
+		assert.equal(supportsDiscoveryForApi("openai-responses"), true);
+	});
+
+	it("returns false for non-discoverable APIs", () => {
+		assert.equal(supportsDiscoveryForApi("anthropic-messages"), false);
+		assert.equal(supportsDiscoveryForApi(undefined), false);
 	});
 });

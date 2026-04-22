@@ -8,10 +8,13 @@ import {
 	getResultErrorMessage,
 	makeAbortedMessage,
 	mergePendingToolCalls,
+	buildFinalAssistantContent,
 	resolveClaudePermissionMode,
 	buildPromptFromContext,
+	buildSdkQueryPrompt,
 	buildSdkOptions,
 	createClaudeCodeElicitationHandler,
+	extractImageBlocksFromContext,
 	extractToolResultsFromSdkUserMessage,
 	getClaudeLookupCommand,
 	parseAskUserQuestionsElicitation,
@@ -167,6 +170,92 @@ describe("stream-adapter — full context prompt (#2859)", () => {
 	});
 });
 
+describe("stream-adapter — image prompt forwarding (#4183)", () => {
+	test("extractImageBlocksFromContext maps user image parts to Anthropic base64 image blocks", () => {
+		const context: Context = {
+			messages: [
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: "look" },
+						{
+							type: "image",
+							data: "data:image/png;base64,abc123",
+							mimeType: "image/png",
+						},
+					],
+				} as Message,
+			],
+		};
+
+		const imageBlocks = extractImageBlocksFromContext(context);
+		assert.deepEqual(imageBlocks, [
+			{
+				type: "image",
+				source: {
+					type: "base64",
+					media_type: "image/png",
+					data: "abc123",
+				},
+			},
+		]);
+	});
+
+	test("buildSdkQueryPrompt returns plain string when no images exist in context", () => {
+		const context: Context = {
+			messages: [{ role: "user", content: "hello" } as Message],
+		};
+		const textPrompt = buildPromptFromContext(context);
+
+		const prompt = buildSdkQueryPrompt(context, textPrompt);
+		assert.equal(typeof prompt, "string");
+		assert.equal(prompt, textPrompt);
+	});
+
+	test("buildSdkQueryPrompt wraps images and prompt text in an SDK user message iterable", async () => {
+		const context: Context = {
+			messages: [
+				{
+					role: "user",
+					content: [
+						{ type: "image", data: "ZmFrZQ==", mimeType: "image/jpeg" },
+						{ type: "text", text: "What is in this image?" },
+					],
+				} as Message,
+			],
+		};
+		const textPrompt = buildPromptFromContext(context);
+
+		const prompt = buildSdkQueryPrompt(context, textPrompt);
+		assert.notEqual(typeof prompt, "string");
+		assert.ok(prompt && typeof (prompt as any)[Symbol.asyncIterator] === "function");
+
+		const messages: any[] = [];
+		for await (const item of prompt as AsyncIterable<any>) {
+			messages.push(item);
+		}
+		assert.equal(messages.length, 1);
+		assert.deepEqual(messages[0], {
+			type: "user",
+			message: {
+				role: "user",
+				content: [
+					{
+						type: "image",
+						source: {
+							type: "base64",
+							media_type: "image/jpeg",
+							data: "ZmFrZQ==",
+						},
+					},
+					{ type: "text", text: textPrompt },
+				],
+			},
+			parent_tool_use_id: null,
+		});
+	});
+});
+
 // ---------------------------------------------------------------------------
 // Bug #4102 — transcript fabrication regression tests
 // ---------------------------------------------------------------------------
@@ -284,11 +373,144 @@ describe("stream-adapter — Claude Code external tool results", () => {
 				toolUseId: "tool-bash-1",
 				result: {
 					content: [{ type: "text", text: "line 1\nline 2" }],
-					details: {},
+					// extractStructuredDetailsFromBlock returns undefined when no
+					// structured payload exists, restoring the pre-#4477 nullable
+					// contract (#4477 review feedback).
+					details: undefined,
 					isError: false,
 				},
 			},
 		]);
+	});
+
+	test("extractToolResultsFromSdkUserMessage reads structuredContent as a sibling field (#4472)", () => {
+		const message: SDKUserMessage = {
+			type: "user",
+			session_id: "sess-1",
+			parent_tool_use_id: "tool-mcp-1",
+			message: {
+				role: "user",
+				content: [
+					{
+						type: "mcp_tool_result",
+						tool_use_id: "tool-mcp-1",
+						content: [{ type: "text", text: "Gate Q3 result saved: verdict=pass" }],
+						is_error: false,
+						structuredContent: { gateId: "Q3", verdict: "pass" },
+					} as unknown as Record<string, unknown>,
+				],
+			},
+		};
+
+		const results = extractToolResultsFromSdkUserMessage(message);
+		assert.deepEqual(results[0].result.details, { gateId: "Q3", verdict: "pass" });
+	});
+
+	test("extractToolResultsFromSdkUserMessage reads structuredContent from a content sub-block (#4472)", () => {
+		const message: SDKUserMessage = {
+			type: "user",
+			session_id: "sess-1",
+			parent_tool_use_id: "tool-mcp-2",
+			message: {
+				role: "user",
+				content: [
+					{
+						type: "mcp_tool_result",
+						tool_use_id: "tool-mcp-2",
+						content: [
+							{ type: "text", text: "Gate Q4 result saved: verdict=flag" },
+							{ type: "structuredContent", structuredContent: { gateId: "Q4", verdict: "flag" } },
+						],
+						is_error: false,
+					} as unknown as Record<string, unknown>,
+				],
+			},
+		};
+
+		const results = extractToolResultsFromSdkUserMessage(message);
+		assert.deepEqual(results[0].result.details, { gateId: "Q4", verdict: "flag" });
+	});
+
+	test("#4477 extractToolResultsFromSdkUserMessage does NOT leak structuredContent pseudo-blocks into visible content", () => {
+		// Regression: when a content sub-block carries `type: "structuredContent"`,
+		// it carries the structured payload (extracted separately into `details`)
+		// and must NOT appear in the visible `content` array — otherwise the
+		// renderer stringifies the JSON pseudo-block and shows it next to the
+		// actual tool output. See PR #4477 review (CodeRabbit, post-fix-round).
+		const message: SDKUserMessage = {
+			type: "user",
+			session_id: "sess-1",
+			parent_tool_use_id: "tool-mcp-strip",
+			message: {
+				role: "user",
+				content: [
+					{
+						type: "mcp_tool_result",
+						tool_use_id: "tool-mcp-strip",
+						content: [
+							{ type: "text", text: "Gate Q5 result saved: verdict=pass" },
+							{ type: "structuredContent", structuredContent: { gateId: "Q5", verdict: "pass" } },
+							{ type: "text", text: "second visible line" },
+							// snake_case variant — also a pseudo-block; also must be stripped
+							{ type: "structured_content", structured_content: { extra: "data" } },
+						],
+						is_error: false,
+					} as unknown as Record<string, unknown>,
+				],
+			},
+		};
+
+		const results = extractToolResultsFromSdkUserMessage(message);
+		assert.equal(results.length, 1, "should extract one result");
+		const result = results[0].result;
+
+		// The structured payload IS extracted to `details`.
+		assert.deepEqual(result.details, { gateId: "Q5", verdict: "pass" });
+
+		// The visible content has the two text blocks but NEITHER pseudo-block.
+		const visibleTexts = result.content.map((c: any) => c.text);
+		assert.deepEqual(
+			visibleTexts,
+			["Gate Q5 result saved: verdict=pass", "second visible line"],
+			"visible content must include only the two text blocks; both structuredContent variants must be stripped",
+		);
+
+		// Belt-and-suspenders: assert no rendered text shows the JSON serialization
+		// of a pseudo-block. We don't check for bare keys like "gateId" or "verdict"
+		// because those are legitimate words in the gate-result message text. The
+		// regression signature would be a JSON-shaped substring that could only
+		// appear via stringification.
+		const allText = visibleTexts.join("\n");
+		assert.ok(
+			!allText.includes('"structuredContent"'),
+			"rendered content must not include the pseudo-block type marker as JSON text",
+		);
+		assert.ok(
+			!allText.includes('"structured_content"'),
+			"rendered content must not include the snake_case pseudo-block type marker as JSON text",
+		);
+	});
+
+	test("extractToolResultsFromSdkUserMessage accepts snake_case structured_content defensively (#4472)", () => {
+		const message: SDKUserMessage = {
+			type: "user",
+			session_id: "sess-1",
+			parent_tool_use_id: "tool-mcp-3",
+			message: {
+				role: "user",
+				content: [
+					{
+						type: "mcp_tool_result",
+						tool_use_id: "tool-mcp-3",
+						content: [{ type: "text", text: "ok" }],
+						structured_content: { operation: "save_gate_result" },
+					} as unknown as Record<string, unknown>,
+				],
+			},
+		};
+
+		const results = extractToolResultsFromSdkUserMessage(message);
+		assert.deepEqual(results[0].result.details, { operation: "save_gate_result" });
 	});
 
 	test("extractToolResultsFromSdkUserMessage falls back to tool_use_result", () => {
@@ -310,11 +532,78 @@ describe("stream-adapter — Claude Code external tool results", () => {
 				toolUseId: "tool-read-1",
 				result: {
 					content: [{ type: "text", text: "file contents" }],
-					details: {},
+					// undefined (not {}) per the restored nullable contract — see
+					// the analogous assertion in the tool_result test above.
+					details: undefined,
 					isError: true,
 				},
 			},
 		]);
+	});
+
+	test("buildFinalAssistantContent preserves intermediate tool calls with attached external results", () => {
+		const finalContent = buildFinalAssistantContent({
+			intermediateToolBlocks: [
+				{
+					type: "toolCall",
+					id: "tool-bash-1",
+					name: "bash",
+					arguments: { command: "echo hi" },
+				} as any,
+			],
+			pendingContent: [{ type: "text", text: "All done." }],
+			toolResultsById: new Map([
+				[
+					"tool-bash-1",
+					{
+						content: [{ type: "text", text: "hi\n" }],
+						details: { source: "claude-code" },
+						isError: false,
+					},
+				],
+			]),
+		});
+
+		assert.equal(finalContent[0]?.type, "toolCall");
+		assert.deepEqual((finalContent[0] as any).externalResult, {
+			content: [{ type: "text", text: "hi\n" }],
+			details: { source: "claude-code" },
+			isError: false,
+		});
+		assert.deepEqual(finalContent[1], { type: "text", text: "All done." });
+	});
+
+	test("buildFinalAssistantContent keeps final-turn tool calls when result arrives without a synthetic user boundary", () => {
+		const finalContent = buildFinalAssistantContent({
+			intermediateToolBlocks: [],
+			pendingContent: [
+				{
+					type: "toolCall",
+					id: "tool-read-1",
+					name: "read",
+					arguments: { path: "README.md" },
+				} as any,
+				{ type: "text", text: "Read complete." },
+			],
+			toolResultsById: new Map([
+				[
+					"tool-read-1",
+					{
+						content: [{ type: "text", text: "file contents" }],
+						details: { path: "README.md" },
+						isError: false,
+					},
+				],
+			]),
+		});
+
+		assert.equal(finalContent[0]?.type, "toolCall");
+		assert.deepEqual((finalContent[0] as any).externalResult, {
+			content: [{ type: "text", text: "file contents" }],
+			details: { path: "README.md" },
+			isError: false,
+		});
+		assert.deepEqual(finalContent[1], { type: "text", text: "Read complete." });
 	});
 });
 
@@ -343,6 +632,14 @@ describe("stream-adapter — session persistence (#2859)", () => {
 		);
 	});
 
+	test("buildSdkOptions enables context-1m beta for opus-4-7 (#4348)", () => {
+		const opts = buildSdkOptions("claude-opus-4-7", "test");
+		assert.ok(
+			Array.isArray(opts.betas) && opts.betas.includes("context-1m-2025-08-07"),
+			"claude-opus-4-7 should have context-1m beta enabled for 1M token context window",
+		);
+	});
+
 	test("buildSdkOptions maps reasoning to effort for adaptive Claude Code models (#3917)", () => {
 		const options = buildSdkOptions("claude-sonnet-4-6", "test", undefined, { reasoning: "high" });
 		assert.equal(options.effort, "high");
@@ -353,6 +650,16 @@ describe("stream-adapter — session persistence (#2859)", () => {
 		assert.equal(options.effort, "max");
 	});
 
+	test("buildSdkOptions maps reasoning to effort for opus-4-7 (#4348)", () => {
+		const options = buildSdkOptions("claude-opus-4-7", "test", undefined, { reasoning: "high" });
+		assert.equal(options.effort, "high");
+	});
+
+	test("buildSdkOptions passes xhigh reasoning natively for opus-4-7 (#4348)", () => {
+		const options = buildSdkOptions("claude-opus-4-7", "test", undefined, { reasoning: "xhigh" });
+		assert.equal(options.effort, "xhigh");
+	});
+
 	test("buildSdkOptions omits effort when reasoning is undefined (#3917)", () => {
 		const options = buildSdkOptions("claude-sonnet-4-6", "test");
 		assert.equal("effort" in options, false);
@@ -361,6 +668,72 @@ describe("stream-adapter — session persistence (#2859)", () => {
 	test("buildSdkOptions omits effort for non-adaptive Claude models (#3917)", () => {
 		const options = buildSdkOptions("claude-sonnet-4-20250514", "test", undefined, { reasoning: "high" });
 		assert.equal("effort" in options, false);
+	});
+
+	// --- Bug fixes #4392: thinking field & model coverage ---
+
+	test("buildSdkOptions sets thinking disabled when reasoning is undefined on adaptive model (#4392)", () => {
+		// Bug C: thinkingLevel="off" means reasoning===undefined; SDK needs thinking:{type:"disabled"}
+		const options = buildSdkOptions("claude-sonnet-4-6", "test", undefined, {});
+		assert.deepEqual(
+			(options as any).thinking,
+			{ type: "disabled" },
+			"thinking must be {type:'disabled'} when reasoning is undefined so SDK stops adaptive thinking",
+		);
+	});
+
+	test("buildSdkOptions omits effort when reasoning is undefined (thinking disabled) (#4392)", () => {
+		// Bug C corollary: no effort when thinking is off
+		const options = buildSdkOptions("claude-sonnet-4-6", "test", undefined, {});
+		assert.equal("effort" in options, false, "effort must not be set when reasoning is undefined");
+	});
+
+	test("buildSdkOptions sets thinking adaptive when reasoning is provided (#4392)", () => {
+		// Bug B: when effort is set, thinking:{type:"adaptive"} must also be present
+		const options = buildSdkOptions("claude-opus-4-6", "test", undefined, { reasoning: "high" });
+		assert.deepEqual(
+			(options as any).thinking,
+			{ type: "adaptive" },
+			"thinking must be {type:'adaptive'} alongside effort when reasoning is set",
+		);
+	});
+
+	test("buildSdkOptions includes both effort and thinking.type=adaptive when reasoning is set (#4392)", () => {
+		// Bug B: both fields must be present together
+		const options = buildSdkOptions("claude-opus-4-6", "test", undefined, { reasoning: "high" });
+		assert.equal(options.effort, "high", "effort must be set");
+		assert.deepEqual((options as any).thinking, { type: "adaptive" }, "thinking must be adaptive");
+	});
+
+	test("buildSdkOptions maps reasoning to effort for sonnet-4-7 (modelSupportsAdaptiveThinking #4392)", () => {
+		// Bug D: sonnet-4-7 was missing from modelSupportsAdaptiveThinking
+		const options = buildSdkOptions("claude-sonnet-4-7", "test", undefined, { reasoning: "high" });
+		assert.equal(options.effort, "high", "sonnet-4-7 must support adaptive thinking and map effort");
+	});
+
+	test("buildSdkOptions maps reasoning to effort for haiku-4-5 (modelSupportsAdaptiveThinking #4392)", () => {
+		// Bug D: haiku-4-5 was missing from modelSupportsAdaptiveThinking
+		const options = buildSdkOptions("claude-haiku-4-5", "test", undefined, { reasoning: "high" });
+		assert.equal(options.effort, "high", "haiku-4-5 must support adaptive thinking and map effort");
+	});
+
+	test("buildSdkOptions maps reasoning to effort for sonnet-4.7 dot-form (modelSupportsAdaptiveThinking #4392)", () => {
+		// Dot-form aliases (e.g. claude-sonnet-4.7) must also be recognised
+		const options = buildSdkOptions("claude-sonnet-4.7", "test", undefined, { reasoning: "high" });
+		assert.equal(options.effort, "high", "claude-sonnet-4.7 must support adaptive thinking and map effort");
+	});
+
+	test("buildSdkOptions maps reasoning to effort for haiku-4.5 dot-form (modelSupportsAdaptiveThinking #4392)", () => {
+		// Dot-form aliases (e.g. claude-haiku-4.5) must also be recognised
+		const options = buildSdkOptions("claude-haiku-4.5", "test", undefined, { reasoning: "high" });
+		assert.equal(options.effort, "high", "claude-haiku-4.5 must support adaptive thinking and map effort");
+	});
+
+	test("buildSdkOptions does not set thinking field for non-adaptive model when reasoning is undefined (#4392)", () => {
+		// Non-adaptive models (e.g. claude-sonnet-4-20250514) don't use the thinking API at all;
+		// no thinking field should be set when reasoning is undefined
+		const options = buildSdkOptions("claude-sonnet-4-20250514", "test", undefined, {});
+		assert.equal("thinking" in options, false, "non-adaptive models must not receive a thinking field");
 	});
 
 	test("buildSdkOptions includes workflow MCP server config when env is set", () => {
@@ -909,11 +1282,15 @@ describe("stream-adapter — permission mode (F10)", () => {
 		}
 	}
 
-	test("buildSdkOptions defaults to bypassPermissions for backwards compatibility", () => {
+	test("buildSdkOptions defaults to acceptEdits (#4383)", () => {
 		clearWorkflowMcpEnv();
 		const opts = buildSdkOptions("claude-sonnet-4-6", "test");
-		assert.equal(opts.permissionMode, "bypassPermissions");
-		assert.equal(opts.allowDangerouslySkipPermissions, true);
+		assert.equal(opts.permissionMode, "acceptEdits");
+		assert.equal(
+			opts.allowDangerouslySkipPermissions,
+			false,
+			"allowDangerouslySkipPermissions must be false when permissionMode is acceptEdits",
+		);
 	});
 
 	test("buildSdkOptions respects explicit acceptEdits override", () => {
@@ -925,6 +1302,11 @@ describe("stream-adapter — permission mode (F10)", () => {
 			false,
 			"allowDangerouslySkipPermissions must be false for non-bypass modes",
 		);
+	});
+
+	test("resolveClaudePermissionMode defaults to acceptEdits when no env var is set (#4383)", async () => {
+		const mode = await resolveClaudePermissionMode({});
+		assert.equal(mode, "acceptEdits");
 	});
 
 	test("resolveClaudePermissionMode honours the GSD_CLAUDE_CODE_PERMISSION_MODE env override", async () => {
@@ -941,6 +1323,27 @@ describe("stream-adapter — permission mode (F10)", () => {
 			mode === "bypassPermissions" || mode === "acceptEdits",
 			`expected bypass or acceptEdits, got ${mode}`,
 		);
+	});
+
+	test("resolveClaudePermissionMode flips to bypassPermissions when GSD_HEADLESS=1 (#4657)", async () => {
+		const originalWarn = console.warn;
+		console.warn = () => {};
+		try {
+			const env = { GSD_HEADLESS: "1" } as NodeJS.ProcessEnv;
+			const mode = await resolveClaudePermissionMode(env);
+			assert.equal(mode, "bypassPermissions");
+		} finally {
+			console.warn = originalWarn;
+		}
+	});
+
+	test("resolveClaudePermissionMode: explicit override wins over GSD_HEADLESS=1", async () => {
+		const env = {
+			GSD_HEADLESS: "1",
+			GSD_CLAUDE_CODE_PERMISSION_MODE: "acceptEdits",
+		} as NodeJS.ProcessEnv;
+		const mode = await resolveClaudePermissionMode(env);
+		assert.equal(mode, "acceptEdits");
 	});
 });
 

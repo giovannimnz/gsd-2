@@ -26,6 +26,14 @@ export interface ProviderDiscoveryAdapter {
 	fetchModels(apiKey: string, baseUrl?: string): Promise<DiscoveredModel[]>;
 }
 
+export const OPENAI_COMPAT_DISCOVERY_APIS = new Set([
+	"openai",
+	"openai-completions",
+	"openai-responses",
+	"openai-codex-responses",
+	"azure-openai-responses",
+]);
+
 /** Per-provider TTLs in milliseconds */
 export const DISCOVERY_TTLS: Record<string, number> = {
 	ollama: 5 * 60 * 1000, // 5 minutes (local, models change often)
@@ -53,9 +61,76 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutM
 
 const OPENAI_EXCLUDED_PREFIXES = ["embedding", "tts", "dall-e", "whisper", "text-embedding", "davinci", "babbage"];
 
+function asPositiveNumber(value: unknown): number | undefined {
+	if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+	if (typeof value === "string") {
+		const n = Number.parseFloat(value);
+		if (Number.isFinite(n) && n > 0) return n;
+	}
+	return undefined;
+}
+
+function pickFirstPositiveNumber(record: Record<string, unknown>, keys: string[]): number | undefined {
+	for (const key of keys) {
+		const value = asPositiveNumber(record[key]);
+		if (value !== undefined) return value;
+	}
+	return undefined;
+}
+
+function discoverInputModalities(rawModel: Record<string, unknown>, id: string): Array<"text" | "image"> {
+	const directModalities = rawModel.input_modalities;
+	const capabilitiesModalities = (rawModel.capabilities as Record<string, unknown> | undefined)?.input_modalities;
+	const source = Array.isArray(directModalities)
+		? directModalities
+		: Array.isArray(capabilitiesModalities)
+			? capabilitiesModalities
+			: [];
+	const supportsImage = source.some((m) => typeof m === "string" && /image|vision/i.test(m))
+		|| /vision|image|omni|multimodal/i.test(id);
+	return supportsImage ? ["text", "image"] : ["text"];
+}
+
+function parseOpenAICompatibleModel(rawModel: Record<string, unknown>): DiscoveredModel | undefined {
+	const id = typeof rawModel.id === "string" ? rawModel.id : "";
+	if (!id) return undefined;
+	if (OPENAI_EXCLUDED_PREFIXES.some((prefix) => id.startsWith(prefix))) return undefined;
+
+	const contextWindow = pickFirstPositiveNumber(rawModel, [
+		"context_window",
+		"context_length",
+		"max_context_length",
+		"max_input_tokens",
+		"input_token_limit",
+		"max_model_len",
+	]);
+	const maxTokens = pickFirstPositiveNumber(rawModel, [
+		"max_output_tokens",
+		"output_token_limit",
+		"max_completion_tokens",
+		"max_tokens",
+	]);
+	const reasoning = rawModel.reasoning === true
+		|| rawModel.supports_reasoning === true
+		|| ((rawModel.capabilities as Record<string, unknown> | undefined)?.reasoning === true);
+
+	return {
+		id,
+		name: typeof rawModel.name === "string" && rawModel.name.length > 0 ? rawModel.name : id,
+		contextWindow,
+		maxTokens,
+		reasoning,
+		input: discoverInputModalities(rawModel, id),
+	};
+}
+
 class OpenAIDiscoveryAdapter implements ProviderDiscoveryAdapter {
-	provider = "openai";
+	provider: string;
 	supportsDiscovery = true;
+
+	constructor(provider: string) {
+		this.provider = provider;
+	}
 
 	async fetchModels(apiKey: string, baseUrl?: string): Promise<DiscoveredModel[]> {
 		// Avoid double /v1 prefix if baseUrl already ends with /v1
@@ -69,43 +144,10 @@ class OpenAIDiscoveryAdapter implements ProviderDiscoveryAdapter {
 			throw new Error(`OpenAI models API returned ${response.status}: ${response.statusText}`);
 		}
 
-		const data = (await response.json()) as {
-			data: Array<{
-				id: string;
-				owned_by?: string;
-				name?: string;
-				context_length?: number;
-				max_output_tokens?: number;
-				top_provider?: { max_completion_tokens?: number };
-				pricing?: { prompt?: string; completion?: string; prompt_cache_hit?: string };
-				object?: string;
-			}>;
-		};
-
-		return data.data
-			.filter((m) => !OPENAI_EXCLUDED_PREFIXES.some((prefix) => m.id.startsWith(prefix)))
-			.map((m) => {
-				const cost =
-					m.pricing?.prompt !== undefined && m.pricing?.completion !== undefined
-						? {
-								input: parseFloat(m.pricing.prompt) * 1_000_000,
-								output: parseFloat(m.pricing.completion) * 1_000_000,
-								cacheRead: m.pricing.prompt_cache_hit !== undefined
-									? parseFloat(m.pricing.prompt_cache_hit) * 1_000_000
-									: 0,
-								cacheWrite: parseFloat(m.pricing.prompt) * 1_000_000,
-							}
-						: undefined;
-
-				return {
-					id: m.id,
-					name: m.name ?? m.id,
-					contextWindow: m.context_length,
-					maxTokens: m.top_provider?.max_completion_tokens ?? m.max_output_tokens,
-					cost,
-					input: ["text" as const, "image" as const],
-				};
-			});
+		const data = (await response.json()) as { data?: Array<Record<string, unknown>> };
+		return (data.data ?? [])
+			.map((m) => parseOpenAICompatibleModel(m))
+			.filter((m): m is DiscoveredModel => !!m);
 	}
 }
 
@@ -251,7 +293,7 @@ function createOpenAIAlias(name: string): ProviderDiscoveryAdapter {
 }
 
 const adapters: Record<string, ProviderDiscoveryAdapter> = {
-	openai: new OpenAIDiscoveryAdapter(),
+	openai: new OpenAIDiscoveryAdapter("openai"),
 	ollama: new OllamaDiscoveryAdapter(),
 	openrouter: new OpenRouterDiscoveryAdapter(),
 	google: new GoogleDiscoveryAdapter(),
@@ -266,8 +308,24 @@ const adapters: Record<string, ProviderDiscoveryAdapter> = {
 	...Object.fromEntries(OPENAI_COMPATIBLE_ALIASES.map((alias) => [alias, createOpenAIAlias(alias)])),
 };
 
-export function getDiscoveryAdapter(provider: string): ProviderDiscoveryAdapter {
-	return adapters[provider] ?? new StaticDiscoveryAdapter(provider);
+export function supportsDiscoveryForApi(api: string | undefined): boolean {
+	if (!api) return false;
+	return OPENAI_COMPAT_DISCOVERY_APIS.has(api);
+}
+
+export function getDiscoveryAdapter(provider: string, providerApis?: Iterable<string>): ProviderDiscoveryAdapter {
+	const known = adapters[provider];
+	if (known) return known;
+
+	if (providerApis) {
+		for (const api of providerApis) {
+			if (supportsDiscoveryForApi(api)) {
+				return new OpenAIDiscoveryAdapter(provider);
+			}
+		}
+	}
+
+	return new StaticDiscoveryAdapter(provider);
 }
 
 export function getDiscoverableProviders(): string[] {

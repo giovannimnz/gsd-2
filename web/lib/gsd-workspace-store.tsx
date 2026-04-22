@@ -65,7 +65,13 @@ import type {
   SessionManageResponse,
 } from "./session-browser-contract"
 import { authFetch, appendAuthParam } from "./auth"
-import { ContextualTips } from "../../packages/pi-coding-agent/src/core/contextual-tips"
+import { ContextualTips } from "../../packages/pi-coding-agent/src/core/contextual-tips.ts"
+import type {
+  WorkspaceIndex,
+  WorkspaceScopeTarget,
+  WorkspaceSliceTarget,
+  WorkspaceValidationIssue,
+} from "../../src/shared/workspace-types.ts"
 
 export type WorkspaceStatus = "idle" | "loading" | "ready" | "error" | "unauthenticated"
 export type WorkspaceConnectionState =
@@ -126,31 +132,8 @@ export interface BridgeRuntimeSnapshot {
   lastError: BridgeLastError | null
 }
 
-import type { WorkspaceTaskTarget, RiskLevel, WorkspaceSliceTarget, WorkspaceMilestoneTarget } from "./workspace-types.js"
-export type { WorkspaceTaskTarget, RiskLevel, WorkspaceSliceTarget, WorkspaceMilestoneTarget }
-
-export interface WorkspaceScopeTarget {
-  scope: string
-  label: string
-  kind: "project" | "milestone" | "slice" | "task"
-}
-
-export interface WorkspaceValidationIssue {
-  message?: string
-  [key: string]: unknown
-}
-
-export interface WorkspaceIndex {
-  milestones: WorkspaceMilestoneTarget[]
-  active: {
-    milestoneId?: string
-    sliceId?: string
-    taskId?: string
-    phase: string
-  }
-  scopes: WorkspaceScopeTarget[]
-  validationIssues: WorkspaceValidationIssue[]
-}
+export type { WorkspaceTaskTarget, RiskLevel, WorkspaceSliceTarget, WorkspaceMilestoneTarget } from "./workspace-types.js"
+export type { WorkspaceIndex, WorkspaceScopeTarget, WorkspaceValidationIssue }
 
 export interface RtkSessionSavings {
   commands: number
@@ -196,12 +179,13 @@ export interface WorkspaceOnboardingProviderState {
   required: true
   recommended: boolean
   configured: boolean
-  configuredVia: "auth_file" | "environment" | "runtime" | null
+  configuredVia: "auth_file" | "environment" | "runtime" | "external_cli" | null
   supports: {
     apiKey: boolean
     oauth: boolean
     oauthAvailable: boolean
     usesCallbackServer: boolean
+    externalCli: boolean
   }
 }
 
@@ -251,6 +235,25 @@ export interface WorkspaceOnboardingBridgeAuthRefreshState {
   error: string | null
 }
 
+/**
+ * CLI-side onboarding wizard completion record (mirrors the server-side
+ * OnboardingState.completionRecord field). Optional to keep the contract
+ * back-compat with workspaces still on older bridge versions that don't
+ * include this field.
+ */
+export interface WorkspaceOnboardingCompletionRecord {
+  /** ISO timestamp of when the wizard last completed, or null if never. */
+  completedAt: string | null
+  /** Step IDs that were completed. */
+  completedSteps: string[]
+  /** Step IDs that were explicitly skipped. */
+  skippedSteps: string[]
+  /** Last step the wizard was on, used by /gsd onboarding --resume. */
+  lastResumePoint: string | null
+  /** Bumped on the CLI side when a new required step is added; signals re-onboarding need. */
+  flowVersion: number
+}
+
 export interface WorkspaceOnboardingState {
   status: "blocked" | "ready"
   locked: boolean
@@ -259,7 +262,7 @@ export interface WorkspaceOnboardingState {
     blocking: true
     skippable: false
     satisfied: boolean
-    satisfiedBy: { providerId: string; source: "auth_file" | "environment" | "runtime" } | null
+    satisfiedBy: { providerId: string; source: "auth_file" | "environment" | "runtime" | "external_cli" } | null
     providers: WorkspaceOnboardingProviderState[]
   }
   optional: {
@@ -270,6 +273,8 @@ export interface WorkspaceOnboardingState {
   lastValidation: WorkspaceOnboardingValidationResult | null
   activeFlow: WorkspaceOnboardingFlowState | null
   bridgeAuthRefresh: WorkspaceOnboardingBridgeAuthRefreshState
+  /** CLI-side wizard completion record. Null if never completed; undefined if the bridge predates this field. */
+  completionRecord?: WorkspaceOnboardingCompletionRecord | null
 }
 
 // ─── Project Detection ──────────────────────────────────────────────────────
@@ -4784,8 +4789,15 @@ export class GSDWorkspaceStore {
     })
 
     const payload = (await response.json()) as OnboardingApiPayload
-    if (!payload.onboarding) {
+    if (!response.ok) {
+      if (payload.onboarding) {
+        this.applyOnboardingState(payload.onboarding)
+      }
       throw new Error(payload.error ?? `Onboarding action failed with ${response.status}`)
+    }
+
+    if (!payload.onboarding) {
+      throw new Error(`Onboarding action returned no state (${response.status})`)
     }
 
     this.applyOnboardingState(payload.onboarding)

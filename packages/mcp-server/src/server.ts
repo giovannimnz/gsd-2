@@ -15,13 +15,16 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { z } from 'zod';
 import type { SessionManager } from './session-manager.js';
+import { isRemoteConfigured, tryRemoteQuestions } from './remote-questions.js';
 import { readProgress } from './readers/state.js';
 import { readRoadmap } from './readers/roadmap.js';
 import { readHistory } from './readers/metrics.js';
 import { readCaptures } from './readers/captures.js';
 import { readKnowledge } from './readers/knowledge.js';
+import { buildGraph, writeGraph, writeSnapshot, graphStatus, graphQuery, graphDiff } from './readers/graph.js';
+import { resolveGsdRoot } from './readers/paths.js';
 import { runDoctorLite } from './readers/doctor-lite.js';
-import { registerWorkflowTools } from './workflow-tools.js';
+import { registerWorkflowTools, validateProjectDir } from './workflow-tools.js';
 import { applySecrets, checkExistingEnvKeys, detectDestination } from './env-writer.js';
 
 // ---------------------------------------------------------------------------
@@ -31,6 +34,34 @@ import { applySecrets, checkExistingEnvKeys, detectDestination } from './env-wri
 const MCP_PKG = '@modelcontextprotocol/sdk';
 const SERVER_NAME = 'gsd';
 const SERVER_VERSION = '2.53.0';
+
+/** User-interaction timeout — generous but bounded so elicitation can't hang indefinitely (#4586). */
+const ELICIT_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * Race a promise against a timeout. Rejects with a typed error on timeout so
+ * callers can return a specific MCP error response rather than hanging.
+ *
+ * @param timeoutMs - override for testing; defaults to ELICIT_TIMEOUT_MS
+ */
+export async function withElicitTimeout<T>(
+  promise: Promise<T>,
+  label: string,
+  timeoutMs = ELICIT_TIMEOUT_MS,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${timeoutMs / 60000} minutes — no user response received`)),
+      timeoutMs,
+    );
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Tool result helpers
@@ -456,17 +487,40 @@ export async function createMcpServer(sessionManager: SessionManager): Promise<{
 
   // -----------------------------------------------------------------------
   // gsd_cancel — cancel a running session
+  //
+  // Supports two lookup strategies:
+  //   1. sessionId  — the ID returned from gsd_execute (primary)
+  //   2. projectDir — absolute path to the project directory (fallback)
+  //
+  // The projectDir fallback handles interactive sessions (started via
+  // `/gsd auto` in the terminal) and post-restart MCP sessions that were
+  // never registered with a sessionId in this server instance.
   // -----------------------------------------------------------------------
   server.tool(
     'gsd_cancel',
-    'Cancel a running GSD session. Aborts the current operation and stops the process.',
+    'Cancel a running GSD session. Aborts the current operation and stops the process. Provide sessionId (from gsd_execute) or projectDir as a fallback for interactive/restarted sessions.',
     {
-      sessionId: z.string().describe('Session ID returned from gsd_execute'),
+      sessionId: z.string().optional().describe('Session ID returned from gsd_execute'),
+      projectDir: z.string().optional().describe('Absolute path to the project directory (fallback when sessionId is unavailable)'),
     },
     async (args: Record<string, unknown>) => {
-      const { sessionId } = args as { sessionId: string };
+      const { sessionId, projectDir } = args as { sessionId?: string; projectDir?: string };
       try {
-        await sessionManager.cancelSession(sessionId);
+        if (!sessionId && !projectDir) {
+          return errorContent('Either sessionId or projectDir must be provided');
+        }
+        if (sessionId) {
+          try {
+            await sessionManager.cancelSession(sessionId);
+          } catch (err) {
+            if (!projectDir || !(err instanceof Error) || !err.message.includes('Session not found')) {
+              throw err;
+            }
+            await sessionManager.cancelSessionByDir(projectDir);
+          }
+        } else if (projectDir) {
+          await sessionManager.cancelSessionByDir(projectDir);
+        }
         return jsonContent({ cancelled: true });
       } catch (err) {
         return errorContent(err instanceof Error ? err.message : String(err));
@@ -495,7 +549,8 @@ export async function createMcpServer(sessionManager: SessionManager): Promise<{
     async (args: Record<string, unknown>) => {
       const { projectDir, query } = args as { projectDir: string; query?: string };
       try {
-        const state = await readProjectState(projectDir, query);
+        const validated = validateProjectDir(projectDir);
+        const state = await readProjectState(validated, query);
         return jsonContent(state);
       } catch (err) {
         return errorContent(err instanceof Error ? err.message : String(err));
@@ -542,13 +597,33 @@ export async function createMcpServer(sessionManager: SessionManager): Promise<{
         allowMultiple: z.boolean().optional().describe('If true, the user can select multiple options. No "None of the above" option is added.'),
       })).describe('Questions to show the user. Prefer 1 and do not exceed 3.'),
     },
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: McpToolExtra) => {
       const { questions } = args as unknown as AskUserQuestionsParams;
       try {
         const validationError = validateAskUserQuestionsPayload(questions);
         if (validationError) return errorContent(validationError);
 
-        const elicitation = await server.server.elicitInput(buildAskUserQuestionsElicitRequest(questions));
+        // Delegate to remote-questions manager when a remote channel is configured
+        // (Discord, Slack, Telegram). This path is the only one reachable for
+        // Claude Code-under-gsd sessions, which have no local TUI.
+        if (isRemoteConfigured()) {
+          const remoteResult = await tryRemoteQuestions(questions, extra?.signal);
+          if (remoteResult) {
+            const details = remoteResult.details as Record<string, unknown> | undefined;
+            if (details?.['timed_out'] || details?.['error']) {
+              // Surface timeout/error as plain text so the LLM knows to retry
+              return textContent(remoteResult.content[0]?.text ?? 'Remote questions timed out or failed');
+            }
+            return textContent(remoteResult.content[0]?.text ?? '');
+          }
+          // resolveRemoteConfig() returned null between isRemoteConfigured() and
+          // tryRemoteQuestions() (e.g. env var was cleared) — fall through to local.
+        }
+
+        const elicitation = await withElicitTimeout(
+          server.server.elicitInput(buildAskUserQuestionsElicitRequest(questions)),
+          'ask_user_questions',
+        );
         if (elicitation.action !== 'accept' || !elicitation.content) {
           return textContent('ask_user_questions was cancelled before receiving a response');
         }
@@ -587,7 +662,7 @@ export async function createMcpServer(sessionManager: SessionManager): Promise<{
       };
 
       try {
-        const resolvedProjectDir = resolve(projectDir);
+        const resolvedProjectDir = validateProjectDir(projectDir);
         const resolvedEnvPath = resolve(resolvedProjectDir, envFilePath ?? '.env');
 
         // (1) Check which keys already exist
@@ -624,14 +699,17 @@ export async function createMcpServer(sessionManager: SessionManager): Promise<{
         }
 
         // (3) Elicit input from the MCP client
-        const elicitation = await server.server.elicitInput({
-          message: `Enter values for ${pendingKeys.length} environment variable(s). Values are written directly to the project and never shown to the AI.`,
-          requestedSchema: {
-            type: 'object',
-            properties,
-            required,
-          },
-        });
+        const elicitation = await withElicitTimeout(
+          server.server.elicitInput({
+            message: `Enter values for ${pendingKeys.length} environment variable(s). Values are written directly to the project and never shown to the AI.`,
+            requestedSchema: {
+              type: 'object',
+              properties,
+              required,
+            },
+          }),
+          'secure_env_collect',
+        );
 
         if (elicitation.action !== 'accept' || !elicitation.content) {
           return textContent('secure_env_collect was cancelled by user.');
@@ -694,7 +772,7 @@ export async function createMcpServer(sessionManager: SessionManager): Promise<{
     async (args: Record<string, unknown>) => {
       const { projectDir } = args as { projectDir: string };
       try {
-        return jsonContent(readProgress(projectDir));
+        return jsonContent(readProgress(validateProjectDir(projectDir)));
       } catch (err) {
         return errorContent(err instanceof Error ? err.message : String(err));
       }
@@ -714,7 +792,7 @@ export async function createMcpServer(sessionManager: SessionManager): Promise<{
     async (args: Record<string, unknown>) => {
       const { projectDir, milestoneId } = args as { projectDir: string; milestoneId?: string };
       try {
-        return jsonContent(readRoadmap(projectDir, milestoneId));
+        return jsonContent(readRoadmap(validateProjectDir(projectDir), milestoneId));
       } catch (err) {
         return errorContent(err instanceof Error ? err.message : String(err));
       }
@@ -734,7 +812,7 @@ export async function createMcpServer(sessionManager: SessionManager): Promise<{
     async (args: Record<string, unknown>) => {
       const { projectDir, limit } = args as { projectDir: string; limit?: number };
       try {
-        return jsonContent(readHistory(projectDir, limit));
+        return jsonContent(readHistory(validateProjectDir(projectDir), limit));
       } catch (err) {
         return errorContent(err instanceof Error ? err.message : String(err));
       }
@@ -754,7 +832,7 @@ export async function createMcpServer(sessionManager: SessionManager): Promise<{
     async (args: Record<string, unknown>) => {
       const { projectDir, scope } = args as { projectDir: string; scope?: string };
       try {
-        return jsonContent(runDoctorLite(projectDir, scope));
+        return jsonContent(runDoctorLite(validateProjectDir(projectDir), scope));
       } catch (err) {
         return errorContent(err instanceof Error ? err.message : String(err));
       }
@@ -774,7 +852,7 @@ export async function createMcpServer(sessionManager: SessionManager): Promise<{
     async (args: Record<string, unknown>) => {
       const { projectDir, filter } = args as { projectDir: string; filter?: 'all' | 'pending' | 'actionable' };
       try {
-        return jsonContent(readCaptures(projectDir, filter ?? 'all'));
+        return jsonContent(readCaptures(validateProjectDir(projectDir), filter ?? 'all'));
       } catch (err) {
         return errorContent(err instanceof Error ? err.message : String(err));
       }
@@ -793,7 +871,89 @@ export async function createMcpServer(sessionManager: SessionManager): Promise<{
     async (args: Record<string, unknown>) => {
       const { projectDir } = args as { projectDir: string };
       try {
-        return jsonContent(readKnowledge(projectDir));
+        return jsonContent(readKnowledge(validateProjectDir(projectDir)));
+      } catch (err) {
+        return errorContent(err instanceof Error ? err.message : String(err));
+      }
+    },
+  );
+
+  // -----------------------------------------------------------------------
+  // gsd_graph — knowledge graph for GSD projects
+  //
+  // Modes:
+  //   build   Parse .gsd/ artifacts and write graph.json atomically.
+  //   query   Search the graph for nodes matching a term (BFS, budget-trimmed).
+  //   status  Check whether graph.json exists and whether it is stale (>24h).
+  //   diff    Compare graph.json with the last build snapshot.
+  // -----------------------------------------------------------------------
+  server.tool(
+    'gsd_graph',
+    [
+      'Manage the GSD project knowledge graph. No session required.',
+      '',
+      'Modes:',
+      '  build   Parse .gsd/ artifacts (STATE.md, milestone ROADMAPs, slice PLANs,',
+      '          KNOWLEDGE.md) and write .gsd/graphs/graph.json atomically.',
+      '  query   Search graph nodes by term (BFS from seed matches, budget-trimmed).',
+      '          Returns matching nodes and reachable edges within the token budget.',
+      '  status  Show whether graph.json exists, its age, node/edge counts, and',
+      '          whether it is stale (built more than 24 hours ago).',
+      '  diff    Compare current graph.json with .last-build-snapshot.json.',
+      '          Returns added, removed, and changed nodes and edges.',
+    ].join('\n'),
+    {
+      projectDir: z.string().describe('Absolute path to the project directory'),
+      mode: z.enum(['build', 'query', 'status', 'diff']).describe(
+        'Operation: build | query | status | diff',
+      ),
+      term: z.string().optional().describe('Search term for query mode (case-insensitive)'),
+      budget: z.number().optional().describe('Token budget for query mode (default: 4000)'),
+      snapshot: z.boolean().optional().describe('Write snapshot before build (for future diff)'),
+    },
+    async (args: Record<string, unknown>) => {
+      const { projectDir: rawProjectDir, mode, term, budget, snapshot } = args as {
+        projectDir: string;
+        mode: 'build' | 'query' | 'status' | 'diff';
+        term?: string;
+        budget?: number;
+        snapshot?: boolean;
+      };
+
+      try {
+        const projectDir = validateProjectDir(rawProjectDir);
+        const gsdRoot = resolveGsdRoot(projectDir);
+
+        switch (mode) {
+          case 'build': {
+            if (snapshot) {
+              await writeSnapshot(gsdRoot).catch(() => { /* best-effort */ });
+            }
+            const graph = await buildGraph(projectDir);
+            await writeGraph(gsdRoot, graph);
+            return jsonContent({
+              built: true,
+              nodeCount: graph.nodes.length,
+              edgeCount: graph.edges.length,
+              builtAt: graph.builtAt,
+            });
+          }
+
+          case 'query': {
+            const result = await graphQuery(projectDir, term ?? '', budget);
+            return jsonContent(result);
+          }
+
+          case 'status': {
+            const result = await graphStatus(projectDir);
+            return jsonContent(result);
+          }
+
+          case 'diff': {
+            const result = await graphDiff(projectDir);
+            return jsonContent(result);
+          }
+        }
       } catch (err) {
         return errorContent(err instanceof Error ? err.message : String(err));
       }

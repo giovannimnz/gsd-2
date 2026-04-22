@@ -1,8 +1,17 @@
 import { ensureDbOpen, isStorageAvailable } from "../bootstrap/dynamic-tools.js";
 import { sanitizeCompleteMilestoneParams } from "../bootstrap/sanitize-complete-milestone.js";
 import { loadWriteGateSnapshot, shouldBlockContextArtifactSaveInSnapshot } from "../bootstrap/write-gate.js";
+import {
+  getMilestone,
+  getSliceStatusSummary,
+  getSliceTaskCounts,
+  readTransaction,
+  saveGateResult,
+} from "../gsd-db.js";
 import { GATE_REGISTRY } from "../gate-registry.js";
 import { saveArtifactToDb } from "../db-writer.js";
+import { resolveMilestoneFile, resolveSliceFile } from "../paths.js";
+import { unlinkSync } from "node:fs";
 import type { CompleteMilestoneParams } from "./complete-milestone.js";
 import { handleCompleteMilestone } from "./complete-milestone.js";
 import { handleCompleteTask } from "./complete-task.js";
@@ -99,6 +108,18 @@ export async function executeSummarySave(
       },
       basePath,
     );
+
+    if (params.artifact_type === "CONTEXT" && !params.task_id) {
+      try {
+        const draftFile = params.slice_id
+          ? resolveSliceFile(basePath, params.milestone_id, params.slice_id, "CONTEXT-DRAFT")
+          : resolveMilestoneFile(basePath, params.milestone_id, "CONTEXT-DRAFT");
+        if (draftFile) unlinkSync(draftFile);
+      } catch (e) {
+        logWarning("tool", `CONTEXT-DRAFT.md unlink failed: ${(e as Error).message}`);
+      }
+    }
+
     return {
       content: [{ type: "text", text: `Saved ${params.artifact_type} artifact to ${relativePath}` }],
       details: { operation: "save_summary", path: relativePath, artifact_type: params.artifact_type },
@@ -626,19 +647,13 @@ export async function executeMilestoneStatus(
       };
     }
 
-    const { createStorageBackend } = await import("../storage-factory.js");
-    const backend = createStorageBackend(basePath);
-
-    backend.transaction(() => {
-      const milestone = backend.getMilestone(params.milestoneId);
+    return readTransaction(() => {
+      const milestone = getMilestone(params.milestoneId);
       if (!milestone) {
-        throw Object.assign(new Error(`Milestone ${params.milestoneId} not found`), {
-          details: {
-            operation: "milestone_status",
-            milestoneId: params.milestoneId,
-            found: false,
-          },
-        });
+        return {
+          content: [{ type: "text", text: `Milestone ${params.milestoneId} not found in database.` }],
+          details: { operation: "milestone_status", milestoneId: params.milestoneId, found: false },
+        };
       }
 
       const sliceStatuses = backend.getSliceStatusSummary(params.milestoneId);
@@ -692,7 +707,8 @@ export async function executeMilestoneStatus(
         content: [{ type: "text", text: `Milestone ${params.milestoneId} not found in database.` }],
         details: { operation: "milestone_status", milestoneId: params.milestoneId, found: false },
       };
-    }
+    });
+  } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logWarning("tool", `gsd_milestone_status tool failed: ${msg}`);
     return {

@@ -43,10 +43,30 @@ function claimsDir(basePath: string): string {
   return join(basePath, ".gsd", "unit-claims");
 }
 
-function claimFilePath(basePath: string, unitKey: string): string {
-  // Sanitize unit key for use as filename (replace / with _)
-  const safeKey = unitKey.replace(/[/\\]/g, "_");
-  return join(claimsDir(basePath), `${safeKey}.claim`);
+type ProviderName = "node:sqlite" | "better-sqlite3";
+
+let providerName: ProviderName | null = null;
+let providerModule: unknown = null;
+let loadAttempted = false;
+
+function suppressSqliteWarning(): void {
+  const origEmit = process.emit;
+  // Override via loose cast: Node's overloaded emit signature is not directly assignable.
+  (process as any).emit = function (event: string, ...args: unknown[]): boolean {
+    if (
+      event === "warning" &&
+      args[0] &&
+      typeof args[0] === "object" &&
+      "name" in args[0] &&
+      (args[0] as { name: string }).name === "ExperimentalWarning" &&
+      "message" in args[0] &&
+      typeof (args[0] as { message: string }).message === "string" &&
+      (args[0] as { message: string }).message.includes("SQLite")
+    ) {
+      return false;
+    }
+    return origEmit.apply(process, [event, ...args] as Parameters<typeof process.emit>) as unknown as boolean;
+  };
 }
 
 function ensureClaimsDir(basePath: string): void {

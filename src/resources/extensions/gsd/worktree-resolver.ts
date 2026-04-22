@@ -44,6 +44,7 @@ export interface WorktreeResolverDeps {
   ) => void;
   createAutoWorktree: (basePath: string, milestoneId: string) => string;
   enterAutoWorktree: (basePath: string, milestoneId: string) => string;
+  enterBranchModeForMilestone: (basePath: string, milestoneId: string) => void;
   getAutoWorktreePath: (basePath: string, milestoneId: string) => string | null;
   autoCommitCurrentBranch: (
     basePath: string,
@@ -78,6 +79,35 @@ export interface NotifyCtx {
   ) => void;
 }
 
+// ─── Path Helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Worktree marker segment — present in any path produced by worktreePath().
+ * Used to strip the worktree suffix and recover the project root (#3729).
+ */
+const WORKTREE_MARKER = "/.gsd/worktrees/";
+
+/**
+ * Resolve the project root from session path state.
+ *
+ * Prefers `originalBasePath` (always the project root when set), but falls
+ * back to `basePath` when `originalBasePath` is falsy (e.g. fresh AutoSession
+ * with default empty string). If `basePath` itself is inside a worktree
+ * directory (contains `/.gsd/worktrees/`), strip that suffix to recover the
+ * actual project root — preventing double-nested worktree paths (#3729).
+ */
+export function resolveProjectRoot(
+  originalBasePath: string,
+  basePath: string,
+): string {
+  let resolved = originalBasePath || basePath;
+  const markerIdx = resolved.indexOf(WORKTREE_MARKER);
+  if (markerIdx !== -1) {
+    resolved = resolved.slice(0, markerIdx);
+  }
+  return resolved;
+}
+
 // ─── WorktreeResolver ──────────────────────────────────────────────────────
 
 export class WorktreeResolver {
@@ -98,12 +128,12 @@ export class WorktreeResolver {
 
   /** Original project root — always the non-worktree path. */
   get projectRoot(): string {
-    return this.s.originalBasePath || this.s.basePath;
+    return resolveProjectRoot(this.s.originalBasePath, this.s.basePath);
   }
 
   /** Path for auto.lock file — same as the old lockBase(). */
   get lockPath(): string {
-    return this.s.originalBasePath || this.s.basePath;
+    return resolveProjectRoot(this.s.originalBasePath, this.s.basePath);
   }
 
   // ── Private Helpers ────────────────────────────────────────────────────
@@ -162,7 +192,9 @@ export class WorktreeResolver {
       return;
     }
 
-    if (!this.deps.shouldUseWorktreeIsolation()) {
+    const mode = this.deps.getIsolationMode();
+
+    if (mode === "none") {
       debugLog("WorktreeResolver", {
         action: "enterMilestone",
         milestoneId,
@@ -179,13 +211,59 @@ export class WorktreeResolver {
       return;
     }
 
-    const basePath = this.s.originalBasePath || this.s.basePath;
+    // Resolve the project root for worktree operations via shared helper.
+    // Handles the case where originalBasePath is falsy and basePath is itself
+    // a worktree path — prevents double-nested worktree paths (#3729).
+    const basePath = resolveProjectRoot(this.s.originalBasePath, this.s.basePath);
     debugLog("WorktreeResolver", {
       action: "enterMilestone",
       milestoneId,
+      mode,
       basePath,
     });
 
+    // ── Branch mode: create/checkout milestone branch, stay in project root ──
+    if (mode === "branch") {
+      try {
+        this.deps.enterBranchModeForMilestone(basePath, milestoneId);
+        // basePath does not change — no worktree, no chdir.
+        // Rebuild GitService so the new HEAD is reflected, then flush any
+        // path-keyed caches that may have been populated before the checkout.
+        this.rebuildGitService();
+        this.deps.invalidateAllCaches();
+        debugLog("WorktreeResolver", {
+          action: "enterMilestone",
+          milestoneId,
+          mode: "branch",
+          result: "success",
+        });
+        emitJournalEvent(basePath, {
+          ts: new Date().toISOString(),
+          flowId: randomUUID(),
+          seq: 0,
+          eventType: "worktree-skip",
+          data: { milestoneId, reason: "branch-mode-no-worktree" },
+        });
+        ctx.notify(`Switched to branch milestone/${milestoneId}.`, "info");
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        debugLog("WorktreeResolver", {
+          action: "enterMilestone",
+          milestoneId,
+          mode: "branch",
+          result: "error",
+          error: msg,
+        });
+        ctx.notify(
+          `Branch isolation setup for ${milestoneId} failed: ${msg}. Continuing on current branch.`,
+          "warning",
+        );
+        this.s.isolationDegraded = true;
+      }
+      return;
+    }
+
+    // ── Worktree mode ─────────────────────────────────────────────────────────
     try {
       const existingPath = this.deps.getAutoWorktreePath(basePath, milestoneId);
       let wtPath: string;
@@ -523,11 +601,13 @@ export class WorktreeResolver {
         }
       }
 
-      // Re-throw MergeConflictError so the auto loop can detect real code
-      // conflicts and stop instead of retrying forever (#2330).
-      if (err instanceof MergeConflictError) {
-        throw err;
-      }
+      // Restore state before re-throwing so callers always get a consistent
+      // session (#4380).
+      this.restoreToProjectRoot();
+      // Re-throw: MergeConflictError stops the auto loop (#2330); non-conflict
+      // errors (permission denied, filesystem failures) must also propagate so
+      // broken states are diagnosable (#4380).
+      throw err;
     }
 
     // Always restore basePath and rebuild — whether merge succeeded or failed
@@ -613,6 +693,8 @@ export class WorktreeResolver {
         error: msg,
       });
       ctx.notify(`Milestone merge failed (branch mode): ${msg}`, "warning");
+      // Re-throw all errors so callers can apply their own recovery logic (#4380).
+      throw err;
     }
   }
 
@@ -635,7 +717,16 @@ export class WorktreeResolver {
       currentMilestoneId,
       nextMilestoneId,
     });
-    this.mergeAndExit(currentMilestoneId, ctx);
+    try {
+      this.mergeAndExit(currentMilestoneId, ctx);
+    } catch (err) {
+      // mergeAndExit emits a warning and restores state when it fails during
+      // merge/cleanup. But if it throws before recovery runs (e.g., in
+      // validateMilestoneId or emitJournalEvent), basePath won't be restored
+      // to projectRoot — re-throw so we don't enter the next milestone with
+      // the current one unmerged.
+      if (this.s.basePath !== this.projectRoot) throw err;
+    }
     this.enterMilestone(nextMilestoneId, ctx);
   }
 }

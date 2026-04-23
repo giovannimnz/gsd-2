@@ -5,6 +5,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 PROJECT_ROOT="$SCRIPT_DIR"
 cd "$PROJECT_ROOT"
 
+# Garantir que o remote upstream existe e aponta para o repo correto
+UPSTREAM_URL="https://github.com/gsd-build/gsd-2.git"
+if git remote get-url upstream &>/dev/null; then
+    CURRENT_URL="$(git remote get-url upstream)"
+    if [[ "$CURRENT_URL" != "$UPSTREAM_URL" ]]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Atualizando URL do upstream remote..." >&2
+        git remote set-url upstream "$UPSTREAM_URL"
+    fi
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Criando upstream remote: $UPSTREAM_URL..." >&2
+    git remote add upstream "$UPSTREAM_URL"
+fi
+git fetch upstream --prune &>/dev/null || true
+
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2
 }

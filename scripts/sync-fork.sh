@@ -5,7 +5,8 @@
 #
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve repo root: script dir + parent
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
 UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/gsd-build/gsd-2.git}"
@@ -13,6 +14,7 @@ UPSTREAM_NAME="upstream"
 BRANCH="${SYNC_BRANCH:-main}"
 STRATEGY="${SYNC_STRATEGY:-theirs}"  # theirs = prefer upstream, ours = prefer fork
 DRY_RUN=false
+LOCAL_ONLY=false  # local sync only — no commit/push/release (for client machines)
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -20,10 +22,17 @@ while [[ $# -gt 0 ]]; do
     --strategy) STRATEGY="$2"; shift 2 ;;
     --strategy=*) STRATEGY="${1#*=}"; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
+    --local-only) LOCAL_ONLY=true; shift ;;
     --branch) BRANCH="$2"; shift 2 ;;
     --branch=*) BRANCH="${1#*=}"; shift ;;
     -h|--help)
-      echo "Usage: $0 [--strategy ours|theirs] [--branch <branch>] [--dry-run]"
+      echo "Usage: $0 [--strategy ours|theirs] [--branch <branch>] [--dry-run] [--local-only]"
+      echo ""
+      echo "Options:"
+      echo "  --strategy    Conflict resolution: 'theirs' (prefer upstream, default) or 'ours' (prefer fork)"
+      echo "  --branch      Branch to sync (default: main)"
+      echo "  --dry-run     Show what would be done without making changes"
+      echo "  --local-only  Local sync only — merge upstream, NO commit/push/release (for client machines)"
       echo ""
       echo "Options:"
       echo "  --strategy   Conflict resolution: 'theirs' (prefer upstream, default) or 'ours' (prefer fork)"
@@ -38,11 +47,16 @@ done
 
 cd "$REPO_ROOT"
 
-echo "=== GSD-2 Fork Sync ==="
+if [[ "$LOCAL_ONLY" == true ]]; then
+    echo "=== GSD-2 Fork Sync (LOCAL ONLY — sem commit/push) ==="
+else
+    echo "=== GSD-2 Fork Sync (DEV) ==="
+fi
 echo "Upstream:  $UPSTREAM_URL"
 echo "Branch:    $BRANCH"
 echo "Strategy:  $STRATEGY (conflict resolution)"
 echo "Dry run:   $DRY_RUN"
+echo "Local only: $LOCAL_ONLY"
 echo ""
 
 # ── Step 1: Add / update upstream remote ────────────────────────────────
@@ -69,7 +83,7 @@ else
 fi
 
 # ── Step 4: Pull latest from origin ─────────────────────────────────────
-echo "[4/8] Pulling latest from origin..."
+echo "[4/8] Pulling latest from origin (skipped in local-only mode)..."
 if [[ "$DRY_RUN" == true ]]; then
   echo "  (skipped - dry run)"
 else
@@ -237,8 +251,15 @@ else
   fi
 fi
 
-echo ""
-echo "=== Sync complete! ==="
+if [[ "$LOCAL_ONLY" == true ]]; then
+    echo ""
+    echo "=== Sync local completo (sem commit/push) ==="
+    echo "Máquina CLIENTE — mudanças mantidas localmente."
+    echo "Para fazer release, use a máquina DEV: npm run release"
+else
+    echo ""
+    echo "=== Sync completo! ==="
+fi
 if [[ "$DRY_RUN" == true ]]; then
   echo "(Dry run - no changes were made)"
 fi
